@@ -19,11 +19,7 @@ def to_utc(series: pd.Series) -> pd.Series:
 
 
 def interpolate_gaps(series: pd.Series, freq: str) -> pd.Series:
-    # Create full index from the beginning of the day to the end of the series
-    # This ensures we catch leading gaps (e.g., series starting at 01:00 instead of 00:00)
-    min_time = series.index.min().normalize()
-    max_time = series.index.max()
-    full_index = pd.date_range(min_time, max_time, freq=freq)
+    full_index = pd.date_range(series.index.min(), series.index.max(), freq=freq)
     reindexed = series.reindex(full_index)
     filled = reindexed.interpolate(method="linear", limit_area="inside")
     if filled.isna().any():

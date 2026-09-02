@@ -28,8 +28,8 @@ def test_interpolate_gaps_fills_missing_hour_linearly():
 
 
 def test_interpolate_gaps_raises_on_edge_nan():
-    idx = pd.date_range("2026-01-01", periods=5, freq="h").delete(0)
-    series = pd.Series([1.0, 2.0, 3.0, 4.0], index=idx)
+    idx = pd.date_range("2026-01-01", periods=5, freq="h")
+    series = pd.Series([np.nan, 2.0, 3.0, 4.0, 5.0], index=idx)
     with pytest.raises(ValueError, match="edge"):
         interpolate_gaps(series, freq="h")
 
