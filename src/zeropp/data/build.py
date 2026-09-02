@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 import xarray as xr
 
@@ -55,6 +57,13 @@ def build_test_long_table(forecast_path: str, obs_path: str) -> pd.DataFrame:
 
     merged = fcs_df.merge(obs_df, on=["station_id", "time", "step"], how="left")
     if not has_native_valid_time:
+        warnings.warn(
+            "No native 'valid_time' coordinate found on this dataset — falling "
+            "back to treating the raw 'time' column as valid_time. This is only "
+            "correct when time already represents issue+lead (e.g. synthetic "
+            "test fixtures with no step offset); for real forecast data missing "
+            "this coordinate, valid_time will be wrong."
+        )
         merged = merged.rename(columns={"time": "valid_time"})
     else:
         merged = merged.drop(columns=["time"])
