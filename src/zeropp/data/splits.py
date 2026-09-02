@@ -1,11 +1,17 @@
-def load_euppbench_split(data_dir: str):
-    """Load EUPPBench's own train/test split.
+import pandas as pd
 
-    BLOCKED: needs built parquet dataset from build.py. When implemented,
-    this MUST reuse EUPPBench's own train/test split — never re-split the
-    data ourselves, per CLAUDE.md's non-negotiable rule.
-    """
-    raise NotImplementedError(
-        "blocked: needs built parquet dataset from build.py; when implemented, "
-        "this MUST reuse EUPPBench's own train/test split — never re-split"
+from zeropp.data.build import build_test_long_table, build_train_ensemble_stats
+
+
+def load_train(data_dir: str = "data/raw") -> pd.DataFrame:
+    return build_train_ensemble_stats(
+        f"{data_dir}/germany_ensemble_reforecasts_t2m.nc",
+        f"{data_dir}/germany_reforecasts_observations_t2m.nc",
+    )
+
+
+def load_test(data_dir: str = "data/raw") -> pd.DataFrame:
+    return build_test_long_table(
+        f"{data_dir}/germany_ensemble_forecasts_t2m.nc",
+        f"{data_dir}/germany_forecasts_observations_t2m.nc",
     )
