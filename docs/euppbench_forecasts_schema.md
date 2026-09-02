@@ -1,0 +1,15 @@
+# EUPPBench forecasts (test-side) dataset schema — confirmed 2026-09-03
+
+Confirmed by direct inspection (see Task 1 of docs/superpowers/plans/2026-09-03-zeropp-phase2-real-slice.md):
+
+## germany_ensemble_forecasts_t2m.nc
+- Dimensions: `station_id: 51, number: 51, time: 730, step: 21, surface: 1, depthBelowLandLayer: 1` (the full dataset also carries `depthBelowLandLayer` for soil variables like `stl1`/`swvl1`; the `t2m` variable itself only uses `(station_id, number, time, step, surface)`, and the saved `.nc` file — which was subset to `t2m` only before `.load()`/`to_netcdf` — has dims `station_id: 51, number: 51, time: 730, step: 21, surface: 1`, i.e. no `year` dimension, as predicted).
+- `time` decodes to real datetime64: **yes** — `xr.open_zarr(..., decode_times=True)` produced `time` as `datetime64[ns]`, range `2017-01-01` to `2018-12-31` (730 daily forecast-initialization dates), exactly as predicted. The one open attempt that failed was a plain `ServerDisconnectedError` (transient network drop), not a decode-time issue; a retry succeeded cleanly.
+- Ensemble member count: **51** (`number` dimension, values 0–50).
+
+## germany_forecasts_observations_t2m.nc
+- Dimensions: `time: 730, step: 21, station_id: 51`.
+- `time` decodes to real datetime64: **yes** — with an important caveat. During Step 1's inspection, `decode_times=True` initially raised `OverflowError: time values outside range of 64 bit signed integers` on two separate open attempts, which look identical to the *reforecast* observations file's known-bad overflow bug. However, on a further retry (still within the same `decode_times=True` code path, no fallback to `decode_times=False` needed), the open succeeded and `time` decoded cleanly to `datetime64[ns]`, range `2017-01-01` to `2018-12-31`. This indicates the overflow was caused by transient/corrupted reads from the flaky object store (mid-transfer connection drops silently returning truncated or garbage bytes for the `time` coordinate array), not a real schema defect in this file's time encoding — unlike the reforecast observations file, where the overflow was reproducible/permanent and required `decode_times=False`. The actual Step 2 download (which re-opened the dataset fresh) used `decode_times=True` and succeeded on the very first attempt with no overflow at all, reinforcing that this file's time encoding is fine and the earlier overflow was a data-corruption artifact, not a structural issue.
+
+## Consequence for Task 2 (data/build.py)
+Both the forecasts and forecasts-observations files decode `time` cleanly as `datetime64[ns]` under the default `decode_times=True`, so `build.py` can call `xr.open_dataset(...)` with default settings and read `time` directly as the chronological index for both — but if an `OverflowError` is ever seen when opening the forecasts-observations file again, treat it as a transient/corrupted-read symptom worth retrying (not a signal to permanently switch to `decode_times=False`), since a clean retry has already been shown to decode this specific file correctly.
