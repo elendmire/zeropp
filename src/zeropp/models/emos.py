@@ -1,25 +1,45 @@
+import numpy as np
+from scipy.optimize import minimize
+from scipy.stats import norm
+
 from zeropp.models.base import Postprocessor
 
 
-class EMOS(Postprocessor):
-    """Ensemble Model Output Statistics baseline.
+def _gaussian_crps(mu: np.ndarray, sigma: np.ndarray, y: np.ndarray) -> np.ndarray:
+    z = (y - mu) / sigma
+    return sigma * (z * (2 * norm.cdf(z) - 1) + 2 * norm.pdf(z) - 1 / np.sqrt(np.pi))
 
-    BLOCKED: needs EUPPBench training data (splits.py) to implement fit().
-    Do not implement with synthetic data — the CRPS-minimization fit only
-    means something against real ensemble/observation pairs.
-    """
+
+class EMOS(Postprocessor):
+    """Ensemble Model Output Statistics: a global Gaussian CRPS-minimization
+    fit, mu = a + b*ens_mean, sigma^2 = exp(c) + exp(d)*ens_var (Gneiting et al. 2005)."""
 
     def __init__(self, quantile_levels: list[float]):
         self.quantile_levels = quantile_levels
+        self._params = None
 
     def fit(self, train) -> "EMOS":
-        raise NotImplementedError(
-            "blocked: needs EUPPBench training data via splits.py "
-            "(EMOS CRPS-minimization fit needs real ensemble/obs pairs)"
-        )
+        ens_mean = train["ens_mean"].to_numpy()
+        ens_var = train["ens_var"].to_numpy()
+        obs = train["t2m_obs"].to_numpy()
 
-    def predict_quantiles(self, X):
-        raise NotImplementedError(
-            "blocked: needs EUPPBench training data via splits.py "
-            "(EMOS CRPS-minimization fit needs real ensemble/obs pairs)"
-        )
+        def negative_mean_crps(params):
+            a, b, c, d = params
+            mu = a + b * ens_mean
+            sigma = np.sqrt(np.exp(c) + np.exp(d) * ens_var)
+            return np.mean(_gaussian_crps(mu, sigma, obs))
+
+        result = minimize(negative_mean_crps, x0=[0.0, 1.0, 0.0, 0.0], method="L-BFGS-B")
+        self._params = result.x
+        return self
+
+    def predict_quantiles(self, X: dict) -> np.ndarray:
+        if self._params is None:
+            raise RuntimeError("EMOS.predict_quantiles called before fit()")
+        a, b, c, d = self._params
+        ens_mean = X["ens_mean"]
+        ens_var = X["ens_var"]
+        mu = a + b * ens_mean
+        sigma = np.sqrt(np.exp(c) + np.exp(d) * ens_var)
+        quantiles = [mu + sigma * norm.ppf(q) for q in self.quantile_levels]
+        return np.stack(quantiles, axis=-1)
