@@ -7,5 +7,6 @@ def build_summary_figures(results_dir: str, out_dir: str) -> None:
     from stub or synthetic output would not reflect real performance.
     """
     raise NotImplementedError(
-        "blocked: needs real results/*.parquet output from real model runs"
+        "blocked: needs real results/*.parquet output from real model runs "
+        "(for CRPS/calibration plots)"
     )

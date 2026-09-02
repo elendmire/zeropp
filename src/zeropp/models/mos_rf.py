@@ -13,7 +13,13 @@ class MOSRandomForest(Postprocessor):
         self.quantile_levels = quantile_levels
 
     def fit(self, train) -> "MOSRandomForest":
-        raise NotImplementedError("blocked: needs EUPPBench training data via splits.py")
+        raise NotImplementedError(
+            "blocked: needs EUPPBench training data via splits.py "
+            "(MOS random forest fit needs real ensemble/obs pairs)"
+        )
 
     def predict_quantiles(self, X):
-        raise NotImplementedError("blocked: needs EUPPBench training data via splits.py")
+        raise NotImplementedError(
+            "blocked: needs EUPPBench training data via splits.py "
+            "(MOS random forest fit needs real ensemble/obs pairs)"
+        )
