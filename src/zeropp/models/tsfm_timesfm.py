@@ -1,24 +1,47 @@
+import numpy as np
+import timesfm
+
 from zeropp.models.base import Postprocessor
+
+DEFAULT_WEIGHTS_PATH = "/ari/users/oavci/zeropp/model_cache/timesfm-3.0-pytorch"
 
 
 class TimesFM3(Postprocessor):
-    """Frozen TimesFM-3 zero-shot postprocessor.
+    """Frozen TimesFM-3 zero-shot postprocessor with real past-future covariate injection.
 
-    BLOCKED: needs the SSH server's `timesfm[torch]` install (scripts/00_setup_env.sh)
-    and a verified covariate API (past-future dynamic covariates) before this can be
-    implemented for real. Do NOT implement covariate injection approximately —
-    verify `python -c "import timesfm; help(timesfm)" | grep -i covariate` on the
-    server first, per CLAUDE.md.
+    NOTE: `timesfm.TimesFM3Forecaster.predict`/`predict_batch` expose a single
+    `past_future_covariates` slot (verified via `inspect.signature` on the
+    server against the real installed package) — there is no separate slot
+    for a second simultaneous past-future covariate. This implementation
+    therefore injects ensemble mean as the covariate and does NOT pass
+    ensemble spread (`X["past_future_ens_spread"]`) to the model at all for
+    this first slice. See task-5-report.md for the explicit limitation note.
     """
 
-    def __init__(self, quantile_levels: list[float]):
+    def __init__(self, quantile_levels: list[float], weights_path: str = DEFAULT_WEIGHTS_PATH):
         self.quantile_levels = quantile_levels
+        self.weights_path = weights_path
+        self._model = None
 
     def fit(self, train) -> "TimesFM3":
         return self  # zero-shot: no-op fit, but see predict_quantiles
 
-    def predict_quantiles(self, X):
-        raise NotImplementedError(
-            "blocked: needs SSH server timesfm[torch] install and verified "
-            "past-future covariate API"
-        )
+    def predict_quantiles(self, X: dict) -> np.ndarray:
+        if self._model is None:
+            self._model = timesfm.TimesFM3Forecaster.from_pretrained(self.weights_path, device="cpu")
+
+        contexts = X["context"]
+        ens_means = X["past_future_ens_mean"]
+        horizon = X["horizon"]
+
+        all_quantiles = []
+        for ctx, ens_mean in zip(contexts, ens_means):
+            out = self._model.predict(
+                context=ctx,
+                horizon=horizon,
+                past_future_covariates=ens_mean,
+                return_quantiles=True,
+            )
+            all_quantiles.append(np.asarray(out.quantiles))
+
+        return np.stack(all_quantiles, axis=0)
