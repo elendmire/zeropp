@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import timesfm
 
@@ -27,6 +29,14 @@ class TimesFM3(Postprocessor):
         return self  # zero-shot: no-op fit, but see predict_quantiles
 
     def predict_quantiles(self, X: dict) -> np.ndarray:
+        if "past_future_ens_spread" in X:
+            warnings.warn(
+                "X['past_future_ens_spread'] was provided but TimesFM3.predict_quantiles "
+                "does not use it — the real TimesFM-3 API only exposes one "
+                "past_future_covariates slot, currently filled by ensemble mean. See "
+                "TimesFM3's class docstring for details."
+            )
+
         if self._model is None:
             self._model = timesfm.TimesFM3Forecaster.from_pretrained(self.weights_path, device="cpu")
 
@@ -39,6 +49,9 @@ class TimesFM3(Postprocessor):
             out = self._model.predict(
                 context=ctx,
                 horizon=horizon,
+                # TODO: investigate whether past_future_covariates accepts a
+                # multi-channel (T, 2) array to combine ens_mean + ens_spread —
+                # not verified this session, see task-5-report.md
                 past_future_covariates=ens_mean,
                 return_quantiles=True,
             )

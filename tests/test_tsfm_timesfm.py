@@ -63,3 +63,23 @@ def test_timesfm3_predict_quantiles_handles_multiple_stations():
 
     assert preds.shape == (2, 3, 9)
     assert fake_model.predict.call_count == 2
+
+
+def test_timesfm3_predict_quantiles_warns_when_ens_spread_is_unused():
+    fake_output = MagicMock()
+    fake_output.forecast = np.zeros(4)
+    fake_output.quantiles = np.zeros((4, 9))
+
+    fake_model = MagicMock()
+    fake_model.predict.return_value = fake_output
+
+    with patch("zeropp.models.tsfm_timesfm.timesfm.TimesFM3Forecaster.from_pretrained", return_value=fake_model):
+        model = TimesFM3(quantile_levels=QUANTILE_LEVELS, weights_path="/fake/path")
+        X = {
+            "context": [np.ones(10)],
+            "past_future_ens_mean": [np.ones(14)],
+            "past_future_ens_spread": [np.ones(14)],
+            "horizon": 4,
+        }
+        with pytest.warns(UserWarning, match="past_future_ens_spread"):
+            model.predict_quantiles(X)
