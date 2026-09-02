@@ -46,3 +46,23 @@ def test_to_utc_raises_on_naive_index():
     series = pd.Series([1.0, 2.0, 3.0], index=idx)
     with pytest.raises(ValueError, match="tz"):
         to_utc(series)
+
+
+def test_dst_spring_forward_naive_local_creates_fake_gap():
+    # 2026-03-29 Europe/Berlin: clocks jump 02:00 -> 03:00, so a naive hourly
+    # range from 00:00 to 05:00 "local wall clock time" skips the nonexistent 02:00.
+    idx = pd.to_datetime(["2026-03-29 00:00", "2026-03-29 01:00", "2026-03-29 03:00",
+                          "2026-03-29 04:00", "2026-03-29 05:00"])
+    series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=idx)
+    gaps = detect_gaps(series, freq="h")
+    assert pd.Timestamp("2026-03-29 02:00") in gaps
+
+
+def test_dst_spring_forward_tz_aware_utc_has_no_fake_gap():
+    # Once converted to UTC, the same real-world instants are genuinely
+    # continuous hourly steps in UTC, so to_utc + detect_gaps must NOT flag a gap.
+    idx = pd.date_range("2026-03-29 00:00", periods=5, freq="h", tz="Europe/Berlin")
+    series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=idx)
+    utc_series = to_utc(series)
+    gaps = detect_gaps(utc_series, freq="h")
+    assert len(gaps) == 0

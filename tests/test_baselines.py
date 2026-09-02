@@ -36,9 +36,15 @@ def test_climatology_broadcasts_same_quantiles_to_every_sample_and_lead():
 
 def test_raw_ensemble_is_passthrough():
     model = RawEnsemble(quantile_levels=QUANTILE_LEVELS).fit(train=None)
-    ensemble_quantiles = np.random.rand(3, 2, 9)
+    ensemble_quantiles = np.arange(54, dtype=float).reshape(3, 2, 9)
     preds = model.predict_quantiles({"ensemble_quantiles": ensemble_quantiles})
     assert np.array_equal(preds, ensemble_quantiles)
+
+
+def test_climatology_predict_before_fit_raises():
+    model = Climatology(quantile_levels=QUANTILE_LEVELS)
+    with pytest.raises(RuntimeError, match="fit"):
+        model.predict_quantiles({"n_samples": 1, "n_leads": 1})
 
 
 def test_persistence_replicates_last_value_across_quantiles():

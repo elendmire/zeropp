@@ -13,6 +13,8 @@ class Climatology(Postprocessor):
         return self
 
     def predict_quantiles(self, X: dict) -> np.ndarray:
+        if self._empirical_quantiles is None:
+            raise RuntimeError("Climatology.predict_quantiles called before fit()")
         n_samples, n_leads = X["n_samples"], X["n_leads"]
         base = self._empirical_quantiles
         return np.tile(base, (n_samples, n_leads, 1))

@@ -19,7 +19,7 @@ exact list of stub modules and what unblocks each one.
 ## Running the tests
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -v
 ```

@@ -62,3 +62,23 @@ def test_reliability_index_positive_for_skewed_pit():
     pit = np.full(100, 0.5)
     idx = reliability_index(pit, n_bins=10)
     assert idx > 0.0
+
+
+def test_pit_values_raises_on_quantile_crossing():
+    quantile_preds = np.array([[[1, 2, 3, 4, 9, 6, 7, 8, 9]]], dtype=float)  # index 4 (9.0) > index 5 (6.0): crossing
+    y_true = np.array([[5.0]])
+    with pytest.raises(ValueError, match="crossing"):
+        pit_values(y_true, quantile_preds, QUANTILE_LEVELS)
+
+
+def test_empirical_coverage_raises_on_inverted_band():
+    quantile_preds = _flat_quantile_preds(1, 1).copy()
+    quantile_preds[..., 0] = 20.0  # q10 now way above q90=9.0, inverted band
+    y_true = np.array([[5.0]])
+    with pytest.raises(ValueError, match="q_lower"):
+        empirical_coverage(y_true, quantile_preds, QUANTILE_LEVELS)
+
+
+def test_pit_histogram_raises_on_empty_input():
+    with pytest.raises(ValueError, match="at least one"):
+        pit_histogram(np.array([]))

@@ -64,3 +64,10 @@ def test_twcrps_raises_on_level_not_in_quantile_levels():
     quantile_preds = np.full((1, 1, 9), 5.0)
     with pytest.raises(ValueError, match="tail_levels"):
         twcrps_from_quantiles(y_true, quantile_preds, QUANTILE_LEVELS, tail_levels=(0.95,))
+
+
+def test_crps_raises_on_quantile_shape_mismatch():
+    y_true = np.full((1, 1), 5.0)
+    quantile_preds = np.full((1, 1, 12), 5.0)
+    with pytest.raises(ValueError, match="quantile_preds"):
+        crps_from_quantiles(y_true, quantile_preds, QUANTILE_LEVELS)

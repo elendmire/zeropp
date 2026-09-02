@@ -13,6 +13,7 @@ class ExperimentConfig:
     quantile_levels: list[float]
     data_size_days: list[int | str]
     seeds: list[int]
+    source_path: Path
 
 
 @dataclass(frozen=True)
@@ -21,24 +22,27 @@ class DataConfig:
     targets: list[str]
     max_lead_hours: int
     split_name: str
+    source_path: Path
 
 
 def load_experiment_config(path: Path | None = None) -> ExperimentConfig:
-    path = path or DEFAULT_EXPERIMENT_CONFIG
-    raw = yaml.safe_load(path.read_text())
+    resolved_path = path or DEFAULT_EXPERIMENT_CONFIG
+    raw = yaml.safe_load(resolved_path.read_text())
     return ExperimentConfig(
         quantile_levels=raw["quantile_levels"],
         data_size_days=raw["data_size_days"],
         seeds=raw["seeds"],
+        source_path=Path(resolved_path),
     )
 
 
 def load_data_config(path: Path | None = None) -> DataConfig:
-    path = path or DEFAULT_DATA_CONFIG
-    raw = yaml.safe_load(path.read_text())
+    resolved_path = path or DEFAULT_DATA_CONFIG
+    raw = yaml.safe_load(resolved_path.read_text())
     return DataConfig(
         euppbench_version=raw["euppbench_version"],
         targets=raw["targets"],
         max_lead_hours=raw["max_lead_hours"],
         split_name=raw["split_name"],
+        source_path=Path(resolved_path),
     )
