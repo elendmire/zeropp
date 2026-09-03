@@ -1,0 +1,79 @@
+"""Unit tests for the reusable functions in scripts/07_data_size_sweep.py that
+Task 5 imports per this plan's Interfaces section (find_breakpoint, sample_contiguous,
+sample_random, compute_metrics, fit_predict_local_emos).
+
+scripts/07_data_size_sweep.py is not an importable package module (its filename starts
+with a digit, so `import scripts.07_data_size_sweep` is a syntax error) — it is loaded
+here via importlib.util.spec_from_file_location, the same mechanism Task 5's own code
+will need to reuse these functions. Only top-level imports/definitions execute on load;
+main() only runs under `if __name__ == "__main__"`, so importing is side-effect-free.
+
+Added in fix-round-1 (revised R3a): find_breakpoint previously had zero direct tests
+despite being flagged as a reusable interface Task 5 imports, and two real direction
+bugs in code that CALLS find_breakpoint were only caught by eyeballing a figure. These
+5 tests cover find_breakpoint's own contract directly and mechanically: a known
+crossing, no crossing, a NaN row, a non-monotonic curve, and a single-element array.
+"""
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "07_data_size_sweep.py"
+_SPEC = importlib.util.spec_from_file_location("data_size_sweep_module", _SCRIPT_PATH)
+data_size_sweep = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(data_size_sweep)
+
+find_breakpoint = data_size_sweep.find_breakpoint
+
+
+def test_find_breakpoint_known_ascending_crossing():
+    # value rises from 1.0 (below reference=2.0) to 3.0 (above it) between n=10 and n=20.
+    n_cases = [0, 10, 20, 30]
+    values = [0.5, 1.0, 3.0, 3.5]
+    bp = find_breakpoint(n_cases, values, reference_value=2.0, better="higher")
+    assert bp is not None
+    assert 10 < bp < 20
+    # linear interpolation: frac = (2.0 - 1.0) / (3.0 - 1.0) = 0.5 -> bp = 10 + 0.5*10 = 15
+    assert bp == pytest.approx(15.0)
+
+
+def test_find_breakpoint_no_crossing():
+    # always above reference=2.0; better="lower" is never achieved anywhere in range.
+    n_cases = [10, 20, 30]
+    values = [5.0, 4.0, 3.5]
+    bp = find_breakpoint(n_cases, values, reference_value=2.0, better="lower")
+    assert bp is None
+
+
+def test_find_breakpoint_skips_nan_row_and_still_finds_the_real_crossing():
+    # NaN at n=0 (e.g. this sweep's n_days=0 "undefined, no data to fit" placeholder
+    # row) must not crash find_breakpoint, and must not prevent it from finding the
+    # real crossing among the remaining, valid pairs.
+    n_cases = [0, 10, 20, 30]
+    values = [float("nan"), 5.0, 3.0, 1.0]
+    bp = find_breakpoint(n_cases, values, reference_value=2.0, better="lower")
+    assert bp is not None
+    assert 20 < bp < 30
+    assert bp == pytest.approx(25.0)
+
+
+def test_find_breakpoint_non_monotonic_curve_reports_first_crossing():
+    # values wiggle: starts above reference (worse), dips below (crosses), then back
+    # above. find_breakpoint's documented contract is to walk pairs in ascending
+    # n_cases order and return the FIRST crossing found, not the last or "the"
+    # crossing (there can be more than one on a non-monotonic curve).
+    n_cases = [0, 10, 20, 30]
+    values = [5.0, 1.0, 4.0, 1.0]
+    bp = find_breakpoint(n_cases, values, reference_value=2.0, better="lower")
+    assert bp is not None
+    assert 0 < bp < 10
+    # frac = (2.0 - 5.0) / (1.0 - 5.0) = 0.75 -> bp = 0 + 0.75*10 = 7.5
+    assert bp == pytest.approx(7.5)
+
+
+def test_find_breakpoint_single_element_returns_none():
+    # a single (n_cases, value) pair has no adjacent pair to interpolate a crossing
+    # between — must return None, not raise (e.g. IndexError on an empty zip).
+    bp = find_breakpoint([10], [5.0], reference_value=2.0, better="lower")
+    assert bp is None

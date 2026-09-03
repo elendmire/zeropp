@@ -111,6 +111,21 @@ def test_build_train_ensemble_stats_with_ids_includes_time_and_year(synthetic_re
     assert len(df) == 7  # same row count/NaN-dropping as build_train_ensemble_stats
 
 
+def test_build_train_ensemble_stats_with_ids_time_and_year_values_not_swapped(synthetic_reforecast_files):
+    # Value-level regression guard (fix-round-1 minor item): the column-presence-only
+    # test above would pass silently even if the xr.Dataset.rename({"time": "time_idx",
+    # "year": "year_idx"}) mapping were accidentally swapped to
+    # {"time": "year_idx", "year": "time_idx"} — same two column names present, wrong
+    # values underneath. The synthetic_reforecast_files fixture builds time=[0, 1] (2
+    # distinct values) and year=[0] (1 distinct value), so a swap is detectable: real
+    # time_idx must take both {0, 1}, real year_idx must be constant {0}.
+    from zeropp.data.build import build_train_ensemble_stats_with_ids
+    fcs_path, obs_path = synthetic_reforecast_files
+    df = build_train_ensemble_stats_with_ids(fcs_path, obs_path)
+    assert set(df["time_idx"].unique()) == {0, 1}
+    assert set(df["year_idx"].unique()) == {0}
+
+
 def test_build_train_ensemble_stats_still_returns_exactly_four_columns(synthetic_reforecast_files):
     # Regression guard: the new with_ids function must not have changed the
     # existing public function's contract.
