@@ -74,6 +74,17 @@ a noisier (higher-variance) estimator of the true ensemble spread than one from 
 be, at every N equally — this is a fixed property of the training archive, not something
 that changes with N, and is not corrected here. Documented as a limitation in the task
 report, not fixed in code (no clean fix exists without re-simulating the ensemble).
+
+DRN (Rasp & Lerch 2018, Task 5): a third trained method added to the contiguous arm
+only, alongside emos_pooled/emos_local, on the identical post-join test_X/obs_values/
+test_station_ids. DRN's per-station embedding already models station-specific structure
+the way emos_local does, so there is no separate local/pooled DRN split -- one
+method="drn" curve is enough. The random arm and multi-seed treatment stay EMOS-only
+(out of scope for DRN, same scope note as emos_local's random-arm exclusion). DRN's
+training seed is config.data_size_sweep_seeds[0] (a real config value, not a new
+hardcoded seed). DRN participates in the crps/coverage_80pct breakpoints (same
+tsfm3 reference as emos_pooled/emos_local) but not interval_width_k, for the identical
+"sharpness has no inherent direction" reason those two already follow.
 """
 import os
 import warnings
@@ -89,6 +100,7 @@ from zeropp.data.build import build_test_long_table, build_train_ensemble_stats_
 from zeropp.eval.calibration import empirical_coverage
 from zeropp.eval.results import write_result
 from zeropp.eval.scores import crps_from_quantiles
+from zeropp.models.drn import DRN
 from zeropp.models.emos import EMOS
 
 REFORECAST_PATH = "data/raw/germany_ensemble_reforecasts_t2m.nc"
@@ -461,7 +473,7 @@ def main() -> None:
             # write_result's parquet write.
             k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
             print(f"N={n_days} days, arm=contiguous (0 training rows): EMOS undefined, no data to fit")
-            for method in ["emos_pooled", "emos_local"]:
+            for method in ["emos_pooled", "emos_local", "drn"]:
                 rows.append({
                     "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
                     "sampling_arm": "contiguous", "seed": None, "method": method,
@@ -506,6 +518,27 @@ def main() -> None:
                 f"N={n_days} days, arm=contiguous, method=emos_local "
                 f"(coverage {n_stations_covered}/{n_unique_test_stations} test stations): {local_metrics}"
             )
+
+            # --- DRN (Rasp & Lerch 2018): contiguous arm only, one pooled-with-
+            # per-station-embedding model per N (see this task's report for the
+            # random-arm/multi-seed out-of-scope note, same rationale as
+            # emos_local). Trained seed comes from config.data_size_sweep_seeds[0]
+            # (a real config value, not a new hardcoded seed) scored on the exact
+            # same post-join test_X/obs_values/test_station_ids emos_local uses.
+            drn_train = train_contig[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
+            drn_model = DRN(quantile_levels=quantile_levels, seed=sweep_seeds[0]).fit(drn_train)
+            drn_preds = drn_model.predict_quantiles({
+                "ens_mean": test_X["ens_mean"], "ens_var": test_X["ens_var"], "station_id": test_station_ids,
+            })
+            drn_metrics = compute_metrics(obs_values, drn_preds, quantile_levels)
+            rows.append({
+                "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
+                "sampling_arm": "contiguous", "seed": None, "method": "drn",
+                **drn_metrics,
+                "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+                "n_stations_covered": None,
+            })
+            print(f"N={n_days} days ({len(train_contig)} training rows): DRN CRPS={drn_metrics['crps']:.4f}")
 
         # --- random arm (secondary, 5 seeds) ---
         k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
@@ -619,7 +652,7 @@ def main() -> None:
     write_result(
         sweep_df,
         name="phase3_data_size_sweep",
-        model_version="phase3-sweep-v3",
+        model_version="phase3-sweep-v4",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
@@ -643,7 +676,12 @@ def main() -> None:
     breakpoint_rows = []
     for metric in ["crps", "coverage_80pct"]:
         reference_value = tsfm3_row[metric]
-        for emos_variant in ["emos_pooled", "emos_local"]:
+        # "emos_variant" here also carries "drn" (Task 5) — kept as the same column
+        # name/loop variable rather than renamed, since "emos_variant" is already the
+        # persisted schema of results/phase3_data_size_sweep_breakpoints.parquet and
+        # DRN gets the identical treatment (crps/coverage_80pct only, same tsfm3
+        # reference, no interval_width_k breakpoint — see module docstring).
+        for emos_variant in ["emos_pooled", "emos_local", "drn"]:
             arm_df = sweep_df[
                 (sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == emos_variant)
             ].copy()
@@ -673,7 +711,7 @@ def main() -> None:
     write_result(
         breakpoints_df,
         name="phase3_data_size_sweep_breakpoints",
-        model_version="phase3-sweep-v3",
+        model_version="phase3-sweep-v4",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
@@ -718,6 +756,9 @@ def main() -> None:
         ]
         local_contig = _ordered(local_contig)
         ax.plot(local_contig["n_days"].astype(str), local_contig[metric], marker="^", linestyle="-", label="EMOS local (contiguous, covered stations)")
+
+        drn_contig = _ordered(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "drn")])
+        ax.plot(drn_contig["n_days"].astype(str), drn_contig[metric], marker="s", linestyle="-", label="DRN (contiguous)")
 
         raw_val = sweep_df[sweep_df["method"] == "raw_ensemble"][metric].iloc[0]
         ax.axhline(raw_val, linestyle=":", label="Raw ensemble (N-independent)")

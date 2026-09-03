@@ -3,7 +3,6 @@ import pytest
 from zeropp.data import download as download_stub
 from zeropp.models.ar_emos import AREMOS
 from zeropp.models.base import Postprocessor
-from zeropp.models.drn import DRN
 from zeropp.models.lead_time_continuous import LeadTimeContinuous
 from zeropp.models.mos_rf import MOSRandomForest
 from zeropp.models.qrf import QRF
@@ -14,9 +13,10 @@ from zeropp.models.tsfm_moirai import Moirai2
 
 # Trained baselines: fit() itself raises NotImplementedError("blocked: ...").
 # NOTE: EMOS was removed from this list once it became a real implementation
-# (Task 4 of the Phase 2 plan) -- it has its own real behavioral tests in
-# tests/test_emos.py now.
-TRAINED_STUB_CLASSES = [QRF, DRN, MOSRandomForest, AREMOS, TimeSeriesEMOS, LeadTimeContinuous]
+# (Task 4 of the Phase 2 plan); DRN was removed for the same reason (Task 5 of
+# the Phase 3 plan) -- it has its own real behavioral tests in
+# tests/test_drn.py now.
+TRAINED_STUB_CLASSES = [QRF, MOSRandomForest, AREMOS, TimeSeriesEMOS, LeadTimeContinuous]
 
 # Zero-shot TSFMs: fit() is a genuine no-op, predict_quantiles() raises.
 # NOTE: TimesFM3 was removed from this list once it became a real
