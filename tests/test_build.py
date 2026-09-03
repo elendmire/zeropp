@@ -101,3 +101,20 @@ def test_build_test_long_table_valid_time_is_real_timestamp(synthetic_forecast_f
     fcs_path, obs_path = synthetic_forecast_files
     df = build_test_long_table(fcs_path, obs_path)
     assert pd.api.types.is_datetime64_any_dtype(df["valid_time"])
+
+
+def test_build_train_ensemble_stats_with_ids_includes_time_and_year(synthetic_reforecast_files):
+    from zeropp.data.build import build_train_ensemble_stats_with_ids
+    fcs_path, obs_path = synthetic_reforecast_files
+    df = build_train_ensemble_stats_with_ids(fcs_path, obs_path)
+    assert set(["station_id", "time_idx", "year_idx", "ens_mean", "ens_var", "t2m_obs"]) <= set(df.columns)
+    assert len(df) == 7  # same row count/NaN-dropping as build_train_ensemble_stats
+
+
+def test_build_train_ensemble_stats_still_returns_exactly_four_columns(synthetic_reforecast_files):
+    # Regression guard: the new with_ids function must not have changed the
+    # existing public function's contract.
+    from zeropp.data.build import build_train_ensemble_stats
+    fcs_path, obs_path = synthetic_reforecast_files
+    df = build_train_ensemble_stats(fcs_path, obs_path)
+    assert list(df.columns) == ["station_id", "ens_mean", "ens_var", "t2m_obs"]

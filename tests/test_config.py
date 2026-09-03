@@ -17,6 +17,11 @@ def test_experiment_config_seeds_present():
     assert all(isinstance(s, int) for s in cfg.seeds)
 
 
+def test_experiment_config_data_size_sweep_seeds():
+    cfg = load_experiment_config()
+    assert cfg.data_size_sweep_seeds == [0, 1, 2, 3, 4]
+
+
 def test_data_config_targets():
     cfg = load_data_config()
     assert cfg.targets == ["t2m", "w10"]

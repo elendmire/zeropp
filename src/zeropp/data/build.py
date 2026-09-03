@@ -4,7 +4,10 @@ import pandas as pd
 import xarray as xr
 
 
-def build_train_ensemble_stats(reforecast_path: str, obs_path: str) -> pd.DataFrame:
+def build_train_ensemble_stats_with_ids(reforecast_path: str, obs_path: str) -> pd.DataFrame:
+    """Same as build_train_ensemble_stats but also keeps time_idx/year_idx so
+    callers (e.g. scripts/07_data_size_sweep.py) can subsample by issue-date
+    pair for the training-data-size sweep."""
     fcs = xr.open_dataset(reforecast_path)
     obs = xr.open_dataset(obs_path)
 
@@ -18,9 +21,15 @@ def build_train_ensemble_stats(reforecast_path: str, obs_path: str) -> pd.DataFr
 
     merged = xr.Dataset({"ens_mean": ens_mean, "ens_var": ens_var, "t2m_obs": obs["t2m"]})
     df = merged.to_dataframe().reset_index()
-    df = df[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
+    df = df.rename(columns={"time": "time_idx", "year": "year_idx"})
+    df = df[["station_id", "time_idx", "year_idx", "ens_mean", "ens_var", "t2m_obs"]]
     df = df.dropna(subset=["ens_mean", "ens_var", "t2m_obs"])
     return df.reset_index(drop=True)
+
+
+def build_train_ensemble_stats(reforecast_path: str, obs_path: str) -> pd.DataFrame:
+    full = build_train_ensemble_stats_with_ids(reforecast_path, obs_path)
+    return full[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
 
 
 def build_test_long_table(forecast_path: str, obs_path: str) -> pd.DataFrame:

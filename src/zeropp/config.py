@@ -13,6 +13,7 @@ class ExperimentConfig:
     quantile_levels: list[float]
     data_size_days: list[int | str]
     seeds: list[int]
+    data_size_sweep_seeds: list[int]
     source_path: Path
 
 
@@ -32,6 +33,7 @@ def load_experiment_config(path: Path | None = None) -> ExperimentConfig:
         quantile_levels=raw["quantile_levels"],
         data_size_days=raw["data_size_days"],
         seeds=raw["seeds"],
+        data_size_sweep_seeds=raw["data_size_sweep_seeds"],
         source_path=Path(resolved_path),
     )
 
