@@ -85,8 +85,20 @@ training seed is config.data_size_sweep_seeds[0] (a real config value, not a new
 hardcoded seed). DRN participates in the crps/coverage_80pct breakpoints (same
 tsfm3 reference as emos_pooled/emos_local) but not interval_width_k, for the identical
 "sharpness has no inherent direction" reason those two already follow.
+
+Fix round 1 (task 5 review) A: every row for a method that actually fits a model
+carries a "fit_seconds" column (wall-clock time.perf_counter() around that
+method's fit()+predict_quantiles() call at that N) -- DRN retrains from scratch at
+every N up to N=full's ~4.28M rows with a FIXED epoch budget regardless of N (see
+DRN's class docstring), so the scaling story (does DRN's wall-clock cost grow with
+N the way EMOS's does, or does the fixed-epoch design make it flatter/steeper) is
+itself a reportable finding, not just the metrics. "fit_seconds" is None for rows
+where nothing was actually fit at that row (N=0 undefined rows, the N=full random-
+arm reuse rows since no refit happens there by construction, and the N-independent
+raw_ensemble/tsfm3 reference rows, which are zero-shot/already-computed).
 """
 import os
+import time
 import warnings
 
 import matplotlib
@@ -479,12 +491,14 @@ def main() -> None:
                     "sampling_arm": "contiguous", "seed": None, "method": method,
                     "crps": float("nan"), "coverage_80pct": float("nan"), "interval_width_k": float("nan"),
                     "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                    "n_stations_covered": None,
+                    "n_stations_covered": None, "fit_seconds": None,
                 })
         else:
             k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
 
+            t0 = time.perf_counter()
             pooled_preds, n_overflow = _catch_overflow_warnings(fit_predict_pooled_emos, train_contig, quantile_levels, test_X)
+            pooled_fit_seconds = time.perf_counter() - t0
             n_overflow_this_ndays += n_overflow
             pooled_metrics = compute_metrics(obs_values, pooled_preds, quantile_levels)
             rows.append({
@@ -492,13 +506,15 @@ def main() -> None:
                 "sampling_arm": "contiguous", "seed": None, "method": "emos_pooled",
                 **pooled_metrics,
                 "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                "n_stations_covered": None,
+                "n_stations_covered": None, "fit_seconds": pooled_fit_seconds,
             })
-            print(f"N={n_days} days, arm=contiguous, method=emos_pooled ({len(train_contig)} rows): {pooled_metrics}")
+            print(f"N={n_days} days, arm=contiguous, method=emos_pooled ({len(train_contig)} rows, {pooled_fit_seconds:.2f}s): {pooled_metrics}")
 
+            t0 = time.perf_counter()
             (local_preds, covered_mask, coverage_fraction), n_overflow = _catch_overflow_warnings(
                 fit_predict_local_emos, train_contig, test_station_ids, test_X, quantile_levels
             )
+            local_fit_seconds = time.perf_counter() - t0
             n_overflow_this_ndays += n_overflow
             n_stations_covered = len(np.unique(test_station_ids[covered_mask])) if covered_mask.any() else 0
             if covered_mask.any():
@@ -512,11 +528,11 @@ def main() -> None:
                 "sampling_arm": "contiguous", "seed": None, "method": "emos_local",
                 **local_metrics,
                 "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                "n_stations_covered": n_stations_covered,
+                "n_stations_covered": n_stations_covered, "fit_seconds": local_fit_seconds,
             })
             print(
                 f"N={n_days} days, arm=contiguous, method=emos_local "
-                f"(coverage {n_stations_covered}/{n_unique_test_stations} test stations): {local_metrics}"
+                f"(coverage {n_stations_covered}/{n_unique_test_stations} test stations, {local_fit_seconds:.2f}s): {local_metrics}"
             )
 
             # --- DRN (Rasp & Lerch 2018): contiguous arm only, one pooled-with-
@@ -525,20 +541,40 @@ def main() -> None:
             # emos_local). Trained seed comes from config.data_size_sweep_seeds[0]
             # (a real config value, not a new hardcoded seed) scored on the exact
             # same post-join test_X/obs_values/test_station_ids emos_local uses.
+            t0 = time.perf_counter()
             drn_train = train_contig[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
             drn_model = DRN(quantile_levels=quantile_levels, seed=sweep_seeds[0]).fit(drn_train)
             drn_preds = drn_model.predict_quantiles({
                 "ens_mean": test_X["ens_mean"], "ens_var": test_X["ens_var"], "station_id": test_station_ids,
             })
+            drn_fit_seconds = time.perf_counter() - t0
             drn_metrics = compute_metrics(obs_values, drn_preds, quantile_levels)
             rows.append({
                 "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
                 "sampling_arm": "contiguous", "seed": None, "method": "drn",
                 **drn_metrics,
                 "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                "n_stations_covered": None,
+                "n_stations_covered": None, "fit_seconds": drn_fit_seconds,
             })
-            print(f"N={n_days} days ({len(train_contig)} training rows): DRN CRPS={drn_metrics['crps']:.4f}")
+            print(f"N={n_days} days ({len(train_contig)} training rows, {drn_fit_seconds:.2f}s): DRN CRPS={drn_metrics['crps']:.4f}")
+
+            # Fix round 1 (task 5 review) B: DRN uses a FIXED epoch budget (50 by
+            # default) regardless of N, with no early stopping (see class
+            # docstring's disclosed deviation from Rasp & Lerch 2018). At the
+            # largest N ("full", ~4.28M rows) this is the training regime most at
+            # risk of not having converged within the fixed budget, so print the
+            # loss trajectory here specifically (first/mid/last epochs) as the
+            # convergence check the task report cites, rather than silently
+            # trusting "loss decreased" without ever looking at the curve.
+            if n_days == "full":
+                lh = drn_model.loss_history_
+                mid = len(lh) // 2
+                print(
+                    f"N=full DRN loss_history_ ({len(lh)} epochs): "
+                    f"epoch0={lh[0]:.4f}, epoch{mid}={lh[mid]:.4f}, "
+                    f"epoch{len(lh) - 2}={lh[-2]:.4f}, epoch{len(lh) - 1}={lh[-1]:.4f}, "
+                    f"last-10-epoch range=[{min(lh[-10:]):.4f}, {max(lh[-10:]):.4f}]"
+                )
 
         # --- random arm (secondary, 5 seeds) ---
         k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
@@ -559,7 +595,7 @@ def main() -> None:
                     "sampling_arm": "random", "seed": seed, "method": "emos_pooled",
                     **pooled_metrics,
                     "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                    "n_stations_covered": None,
+                    "n_stations_covered": None, "fit_seconds": None,  # reused, no refit — see module docstring
                 })
             print(
                 f"N=full days, arm=random (all {len(sweep_seeds)} seeds), method=emos_pooled: "
@@ -572,27 +608,32 @@ def main() -> None:
                 "coverage_80pct": pooled_metrics["coverage_80pct"],
                 "interval_width_k": pooled_metrics["interval_width_k"],
                 "crps_std": 0.0, "coverage_80pct_std": 0.0, "interval_width_k_std": 0.0,
-                "n_stations_covered": None,
+                "n_stations_covered": None, "fit_seconds": None,
             }
         else:
             seed_metrics = []
+            seed_fit_seconds = []
             for seed in sweep_seeds:
                 train_rand = sample_random(full_train, n_days, seed)
                 if len(train_rand) == 0:
                     rand_metrics = {"crps": float("nan"), "coverage_80pct": float("nan"), "interval_width_k": float("nan")}
+                    rand_fit_seconds = float("nan")
                     print(f"N={n_days} days, arm=random, seed={seed} (0 training rows): EMOS undefined, no data to fit")
                 else:
+                    t0 = time.perf_counter()
                     rand_preds, n_overflow = _catch_overflow_warnings(fit_predict_pooled_emos, train_rand, quantile_levels, test_X)
+                    rand_fit_seconds = time.perf_counter() - t0
                     n_overflow_this_ndays += n_overflow
                     rand_metrics = compute_metrics(obs_values, rand_preds, quantile_levels)
-                    print(f"N={n_days} days, arm=random, seed={seed}, method=emos_pooled ({len(train_rand)} rows): {rand_metrics}")
+                    print(f"N={n_days} days, arm=random, seed={seed}, method=emos_pooled ({len(train_rand)} rows, {rand_fit_seconds:.2f}s): {rand_metrics}")
                 seed_metrics.append(rand_metrics)
+                seed_fit_seconds.append(rand_fit_seconds)
                 rows.append({
                     "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
                     "sampling_arm": "random", "seed": seed, "method": "emos_pooled",
                     **rand_metrics,
                     "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                    "n_stations_covered": None,
+                    "n_stations_covered": None, "fit_seconds": rand_fit_seconds,
                 })
 
             seed_df = pd.DataFrame(seed_metrics)
@@ -605,7 +646,12 @@ def main() -> None:
                 "crps_std": float(seed_df["crps"].std()),
                 "coverage_80pct_std": float(seed_df["coverage_80pct"].std()),
                 "interval_width_k_std": float(seed_df["interval_width_k"].std()),
+                # nanmean over an all-NaN list (every seed had 0 training rows, e.g.
+                # N=0) would raise "RuntimeWarning: Mean of empty slice" and return
+                # NaN anyway -- short-circuit to explicit NaN instead of letting the
+                # warning fire for a value that's NaN either way.
                 "n_stations_covered": None,
+                "fit_seconds": float(np.nanmean(seed_fit_seconds)) if not all(np.isnan(seed_fit_seconds)) else float("nan"),
             }
         rows.append(mean_row)
         print(f"N={n_days} days, arm=random_mean, method=emos_pooled: {mean_row}")
@@ -633,7 +679,7 @@ def main() -> None:
                 "sampling_arm": "n_independent", "seed": None, "method": method,
                 **ref_metrics,
                 "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
-                "n_stations_covered": None,
+                "n_stations_covered": None, "fit_seconds": None,  # zero-shot/already-computed
             })
         print(f"method={method} (N-independent, {len(df_method)} matched instances): {ref_metrics}")
 
@@ -652,7 +698,7 @@ def main() -> None:
     write_result(
         sweep_df,
         name="phase3_data_size_sweep",
-        model_version="phase3-sweep-v4",
+        model_version="phase3-sweep-v5",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
@@ -711,7 +757,7 @@ def main() -> None:
     write_result(
         breakpoints_df,
         name="phase3_data_size_sweep_breakpoints",
-        model_version="phase3-sweep-v4",
+        model_version="phase3-sweep-v5",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
