@@ -18,6 +18,24 @@ class TimesFM3(Postprocessor):
     therefore injects ensemble mean as the covariate and does NOT pass
     ensemble spread (`X["past_future_ens_spread"]`) to the model at all for
     this first slice. See task-5-report.md for the explicit limitation note.
+
+    QUANTILE LEVEL VERIFICATION (final-review C2 finding): inspected the real
+    installed `timesfm3` package source
+    (`timesfm3/model.py`: `quantiles: list[float] | None = None` defaulting to
+    `[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`; `timesfm3_forecaster.py`:
+    `median_quantile_index: int = 4`) AND the real loaded checkpoint at
+    `DEFAULT_WEIGHTS_PATH` on the server (`model.config.quantiles ==
+    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`, `median_quantile_index ==
+    4`) — confirmed the model's real quantile head outputs exactly these 9
+    levels, in this ascending order, matching this project's
+    `quantile_levels` config column-for-column. `predict()` is also called
+    with its default `sort_quantiles=True`, which only fixes any residual
+    quantile-crossing (keeps output non-decreasing along the quantile axis)
+    and does not reorder columns/levels, so column i of `out.quantiles`
+    always corresponds to `self.quantile_levels[i]`. The shape assertion
+    below is a lightweight runtime guard for this; the level *values* are
+    a fixed model-config property verified once here rather than re-checked
+    on every call (the underlying package does not expose them per-call).
     """
 
     def __init__(
@@ -61,6 +79,14 @@ class TimesFM3(Postprocessor):
                 past_future_covariates=ens_mean,
                 return_quantiles=True,
             )
-            all_quantiles.append(np.asarray(out.quantiles))
+            quantiles = np.asarray(out.quantiles)
+            assert quantiles.shape[-1] == len(self.quantile_levels), (
+                f"TimesFM3 returned {quantiles.shape[-1]} quantile columns but "
+                f"quantile_levels has {len(self.quantile_levels)} entries — the "
+                "model's quantile head configuration no longer matches this "
+                "project's quantile_levels (see class docstring for the "
+                "verified default: [0.1, ..., 0.9])."
+            )
+            all_quantiles.append(quantiles)
 
         return np.stack(all_quantiles, axis=0)

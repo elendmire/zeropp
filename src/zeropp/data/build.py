@@ -9,7 +9,12 @@ def build_train_ensemble_stats(reforecast_path: str, obs_path: str) -> pd.DataFr
     obs = xr.open_dataset(obs_path)
 
     ens_mean = fcs["t2m"].mean(dim="number")
-    ens_var = fcs["t2m"].var(dim="number")
+    # ddof=1 (sample variance) to match the test-side ensemble variance, which
+    # is computed with pandas' .var() (default ddof=1) in scripts/03_run_baselines.py
+    # and scripts/04_run_tsfm.py. xarray's .var() defaults to ddof=0 (population
+    # variance), which would otherwise train EMOS on a systematically different
+    # variance definition than the one it's evaluated on at test time.
+    ens_var = fcs["t2m"].var(dim="number", ddof=1)
 
     merged = xr.Dataset({"ens_mean": ens_mean, "ens_var": ens_var, "t2m_obs": obs["t2m"]})
     df = merged.to_dataframe().reset_index()
