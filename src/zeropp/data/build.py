@@ -32,6 +32,36 @@ def build_train_ensemble_stats(reforecast_path: str, obs_path: str) -> pd.DataFr
     return full[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
 
 
+def build_train_ensemble_stats_with_lead(reforecast_path: str, obs_path: str) -> pd.DataFrame:
+    """Same underlying rows as build_train_ensemble_stats_with_ids, but keeps the
+    reforecast archive's 'step' dimension (renamed 'step_hours', matching the test-side
+    naming in build_test_long_table) INSTEAD of dropping it via column selection.
+
+    Task 6 E4 confirmed (by direct code inspection, corroborated by
+    tests/test_build.py's existing fixture: 2 stations x 2 time_idx x 1 year x 2 step =
+    8 combinations, 7 after one NaN drop) that build_train_ensemble_stats_with_ids's
+    rows already differ by lead time -- the function never averages over 'step' (only
+    .mean(dim="number") averages over ensemble members); 'step' is merely dropped from
+    the OUTPUT COLUMNS by that function's final column subselection. This function is
+    the with-step-retained sibling needed for Task 6 E4's optional lead-time-grouped
+    EMOS extension and Task 6 E5b's lead-time-bucketed analysis: fitting one EMOS per
+    lead-time bucket requires a training dataframe that can actually be split by lead
+    time, which build_train_ensemble_stats_with_ids's public four/six-column contract
+    cannot provide."""
+    fcs = xr.open_dataset(reforecast_path)
+    obs = xr.open_dataset(obs_path)
+
+    ens_mean = fcs["t2m"].mean(dim="number")
+    ens_var = fcs["t2m"].var(dim="number", ddof=1)
+
+    merged = xr.Dataset({"ens_mean": ens_mean, "ens_var": ens_var, "t2m_obs": obs["t2m"]})
+    df = merged.to_dataframe().reset_index()
+    df = df.rename(columns={"time": "time_idx", "year": "year_idx", "step": "step_hours"})
+    df = df[["station_id", "time_idx", "year_idx", "step_hours", "ens_mean", "ens_var", "t2m_obs"]]
+    df = df.dropna(subset=["ens_mean", "ens_var", "t2m_obs"])
+    return df.reset_index(drop=True)
+
+
 def build_test_long_table(forecast_path: str, obs_path: str) -> pd.DataFrame:
     fcs = xr.open_dataset(forecast_path)
     try:

@@ -112,8 +112,10 @@ from zeropp.data.build import build_test_long_table, build_train_ensemble_stats_
 from zeropp.eval.calibration import empirical_coverage
 from zeropp.eval.results import write_result
 from zeropp.eval.scores import crps_from_quantiles
+from zeropp.eval.significance import station_blocked_paired_test
 from zeropp.models.drn import DRN
 from zeropp.models.emos import EMOS
+from zeropp.models.variance_inflation import VarianceInflationBaseline
 
 REFORECAST_PATH = "data/raw/germany_ensemble_reforecasts_t2m.nc"
 REFORECAST_OBS_PATH = "data/raw/germany_reforecasts_observations_t2m.nc"
@@ -137,6 +139,31 @@ REFORECAST_ISSUE_DATE_SPAN_DAYS = 728.0  # measured: (ds.time.max() - ds.time.mi
 DAYS_PER_CASE = REFORECAST_ISSUE_DATE_SPAN_DAYS / REFORECAST_TOTAL_ISSUE_DATES  # measured ~3.4833
 LOCAL_EMOS_MIN_ROWS = 5
 
+# --- Task 6 E3: low-N grid, k=1..7. Driven by k DIRECTLY (via the exact round-trip
+# below), not by n_days, since n_days_to_k's round() rounds coarsely at small N (e.g.
+# a human-friendly n_days=10 doesn't necessarily map back to k=3 exactly). See
+# n_days_for_exact_k() and the "E3 low-N grid" block in main().
+LOW_N_K_GRID = [1, 2, 3, 5, 7]
+
+# --- Task 6 E1(b): a genuinely zero-shot fixed-multiplier variance-inflation
+# baseline, cited from the published ensemble spread-skill literature rather than
+# fit to any of this project's own data (fitting it here would defeat the point of
+# E1(b) -- a baseline with NO fitting step at all, matching TimesFM-3's own
+# zero-shot status). ECMWF EPS spread-skill ratios (SSR = ensemble spread / RMSE of
+# the ensemble mean; SSR=1 means perfectly calibrated spread) for surface
+# temperature at medium range are widely reported in the literature as sub-1
+# (under-dispersed), commonly cited in the ~0.6-0.8 range (Buizza, R., 1997,
+# "Potential Forecast Skill of Ensemble Prediction and Spread and Skill
+# Distributions of the ECMWF Ensemble Prediction System", Mon. Wea. Rev. 125,
+# 99-119; Fortin, V. et al., 2014, "Why Should Ensemble Spread Match the RMSE of
+# the Ensemble Mean?", J. Hydrometeor. 15, 1708-1713). No single precise scalar is
+# universally cited for EUPPBench's specific station/lead-time subset, so
+# LAMBDA_CLIM = 1/SSR uses a representative round point (SSR=0.67) from that
+# reported range rather than one paper's exact figure re-derived for this exact
+# archive -- documented as a deliberate approximation, not a load-bearing citation.
+# See the Task 6 report's E1 section for the full judgment-call writeup.
+LAMBDA_CLIM = 1.5
+
 # Set from Step 0's verified finding (time_idx ordering is real; year_idx ordering is
 # assumed — see module docstring). CHRONOLOGICAL_DESCENDING = True: sort descending by
 # (year_idx, time_idx) so the largest values (assumed/confirmed most recent) come first.
@@ -154,6 +181,18 @@ def n_days_to_k(n_days) -> int | str:
 def k_to_calendar_days(k: int) -> int:
     """Inverse of n_days_to_k's ratio, for reporting 'N cases (M calendar days)'."""
     return round(k * DAYS_PER_CASE)
+
+
+def n_days_for_exact_k(k: int) -> float:
+    """Task 6 E3: the inverse of n_days_to_k's ratio, chosen so that
+    n_days_to_k(n_days_for_exact_k(k)) == k EXACTLY (round(k) == k for any integer
+    k, no rounding error) -- this is how sample_contiguous/sample_random get
+    "driven by k directly" per the task brief while still being called with their
+    existing n_days-shaped signature, verbatim, with no change to either function.
+    Contrast with picking a human-friendly integer n_days (e.g. 10) and hoping it
+    happens to round-trip back to the desired k via n_days_to_k -- that's exactly
+    the coarse rounding at small N the brief calls out."""
+    return k * DAYS_PER_CASE
 
 
 def k_and_calendar_days(n_days, n_pairs_full: int) -> tuple[int, int | None]:
@@ -472,6 +511,7 @@ def main() -> None:
 
     rows = []
     n_overflow_by_ndays = {}
+    e2_cache = {}  # Task 6 E2: populated at n_days in (30, 90), see inside the loop
     for n_days in data_size_days:
         n_overflow_this_ndays = 0
 
@@ -485,7 +525,7 @@ def main() -> None:
             # write_result's parquet write.
             k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
             print(f"N={n_days} days, arm=contiguous (0 training rows): EMOS undefined, no data to fit")
-            for method in ["emos_pooled", "emos_local", "drn"]:
+            for method in ["emos_pooled", "emos_local", "drn", "var_inflation_trainfit"]:
                 rows.append({
                     "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
                     "sampling_arm": "contiguous", "seed": None, "method": method,
@@ -509,6 +549,22 @@ def main() -> None:
                 "n_stations_covered": None, "fit_seconds": pooled_fit_seconds,
             })
             print(f"N={n_days} days, arm=contiguous, method=emos_pooled ({len(train_contig)} rows, {pooled_fit_seconds:.2f}s): {pooled_metrics}")
+
+            # --- Task 6 E2: cache per-instance CRPS/coverage-indicator arrays for
+            # emos_pooled at exactly n_days=30 (k=9) and n_days=90 (k=26) -- the two
+            # N's Task 4's headline sentence names -- for the significance test
+            # against tsfm3 run once after this loop. Kept keyed by n_days (not k)
+            # since that's the loop variable already in scope; e2_cache stays empty
+            # for every other n_days (cheap: two small arrays, no extra model fit).
+            if n_days in (30, 90):
+                lo_idx_e2, hi_idx_e2 = quantile_levels.index(0.1), quantile_levels.index(0.9)
+                e2_cache[n_days] = {
+                    "crps_per_instance": crps_from_quantiles(obs_values, pooled_preds, quantile_levels).flatten(),
+                    "coverage_indicator": (
+                        (obs_values[:, 0] >= pooled_preds[:, 0, lo_idx_e2])
+                        & (obs_values[:, 0] <= pooled_preds[:, 0, hi_idx_e2])
+                    ).astype(float),
+                }
 
             t0 = time.perf_counter()
             (local_preds, covered_mask, coverage_fraction), n_overflow = _catch_overflow_warnings(
@@ -575,6 +631,28 @@ def main() -> None:
                     f"epoch{len(lh) - 2}={lh[-2]:.4f}, epoch{len(lh) - 1}={lh[-1]:.4f}, "
                     f"last-10-epoch range=[{min(lh[-10:]):.4f}, {max(lh[-10:]):.4f}]"
                 )
+
+            # --- Task 6 E1(a): variance-inflation baseline, multiplier estimated
+            # from the SAME k-sized contiguous training subset EMOS/DRN just used
+            # ("1 parameter / k cases" vs. EMOS's "4 parameters / k cases") -- see
+            # VarianceInflationBaseline's docstring. Never fit on test data.
+            t0 = time.perf_counter()
+            vi_train = train_contig[["ens_mean", "ens_var", "t2m_obs"]]
+            vi_model = VarianceInflationBaseline(quantile_levels=quantile_levels).fit(vi_train)
+            vi_preds = vi_model.predict_quantiles({"ens_mean": test_X["ens_mean"], "ens_var": test_X["ens_var"]})
+            vi_fit_seconds = time.perf_counter() - t0
+            vi_metrics = compute_metrics(obs_values, vi_preds, quantile_levels)
+            rows.append({
+                "n_days": str(n_days), "n_cases": k, "n_calendar_days_equiv": n_calendar,
+                "sampling_arm": "contiguous", "seed": None, "method": "var_inflation_trainfit",
+                **vi_metrics,
+                "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+                "n_stations_covered": None, "fit_seconds": vi_fit_seconds,
+            })
+            print(
+                f"N={n_days} days, arm=contiguous, method=var_inflation_trainfit "
+                f"(multiplier={vi_model.multiplier:.4f}, {vi_fit_seconds:.4f}s): {vi_metrics}"
+            )
 
         # --- random arm (secondary, 5 seeds) ---
         k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
@@ -683,6 +761,23 @@ def main() -> None:
             })
         print(f"method={method} (N-independent, {len(df_method)} matched instances): {ref_metrics}")
 
+    # --- Task 6 E1(b): fixed-climatological-multiplier variance-inflation baseline.
+    # Genuinely zero-shot -- no training data, no fit() call, matching TimesFM-3's
+    # own zero-shot status (see LAMBDA_CLIM's citation/caveat comment above). One
+    # N-independent reference row, exactly like raw_ensemble/tsfm3 above.
+    vi_fixed_model = VarianceInflationBaseline.from_fixed_multiplier(LAMBDA_CLIM, quantile_levels=quantile_levels)
+    vi_fixed_preds = vi_fixed_model.predict_quantiles({"ens_mean": test_X["ens_mean"], "ens_var": test_X["ens_var"]})
+    vi_fixed_metrics = compute_metrics(obs_values, vi_fixed_preds, quantile_levels)
+    for n_days in data_size_days:
+        rows.append({
+            "n_days": str(n_days), "n_cases": None, "n_calendar_days_equiv": None,
+            "sampling_arm": "n_independent", "seed": None, "method": "var_inflation_fixed",
+            **vi_fixed_metrics,
+            "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+            "n_stations_covered": None, "fit_seconds": None,  # zero-shot, no fit at all
+        })
+    print(f"method=var_inflation_fixed (N-independent, multiplier={LAMBDA_CLIM}): {vi_fixed_metrics}")
+
     sweep_df = pd.DataFrame(rows)
 
     # Dtype audit: n_days is the ONLY string-valued column. n_cases and
@@ -698,7 +793,7 @@ def main() -> None:
     write_result(
         sweep_df,
         name="phase3_data_size_sweep",
-        model_version="phase3-sweep-v5",
+        model_version="phase3-sweep-v6",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
@@ -722,12 +817,13 @@ def main() -> None:
     breakpoint_rows = []
     for metric in ["crps", "coverage_80pct"]:
         reference_value = tsfm3_row[metric]
-        # "emos_variant" here also carries "drn" (Task 5) — kept as the same column
-        # name/loop variable rather than renamed, since "emos_variant" is already the
-        # persisted schema of results/phase3_data_size_sweep_breakpoints.parquet and
-        # DRN gets the identical treatment (crps/coverage_80pct only, same tsfm3
-        # reference, no interval_width_k breakpoint — see module docstring).
-        for emos_variant in ["emos_pooled", "emos_local", "drn"]:
+        # "emos_variant" here also carries "drn" (Task 5) and "var_inflation_trainfit"
+        # (Task 6 E1) — kept as the same column name/loop variable rather than
+        # renamed, since "emos_variant" is already the persisted schema of
+        # results/phase3_data_size_sweep_breakpoints.parquet and both get the
+        # identical treatment (crps/coverage_80pct only, same tsfm3 reference, no
+        # interval_width_k breakpoint — see module docstring).
+        for emos_variant in ["emos_pooled", "emos_local", "drn", "var_inflation_trainfit"]:
             arm_df = sweep_df[
                 (sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == emos_variant)
             ].copy()
@@ -757,7 +853,7 @@ def main() -> None:
     write_result(
         breakpoints_df,
         name="phase3_data_size_sweep_breakpoints",
-        model_version="phase3-sweep-v5",
+        model_version="phase3-sweep-v6",
         config={
             "data_size_days": data_size_days,
             "data_size_sweep_seeds": sweep_seeds,
@@ -766,6 +862,151 @@ def main() -> None:
             "chronological_descending": CHRONOLOGICAL_DESCENDING,
             "days_per_case_measured": DAYS_PER_CASE,
         },
+    )
+
+    # --- Task 6 E2: apply Task 2's station-blocked significance test to Task 4's
+    # headline coverage/CRPS gaps at k=9 (n_days=30) and k=26 (n_days=90), for
+    # emos_pooled vs tsfm3. Uses the e2_cache captured inside the main loop above
+    # (emos_pooled's per-instance CRPS/coverage-indicator arrays, in matched_keys'
+    # row order) against tsfm3's per-instance arrays built HERE in that exact same
+    # row order via a left-merge on matched_keys (not `raw`'s own incidental row
+    # order) -- station_blocked_paired_test's `diff = loss_a - loss_b` is a
+    # per-INSTANCE paired differential, so misaligned row order between the two
+    # arrays would silently pair the wrong instances together.
+    tsfm3_ordered = matched_keys[key_cols].merge(raw[raw["method"] == "tsfm3"], on=key_cols, how="left")
+    assert tsfm3_ordered["obs"].notna().all(), (
+        "left-merging tsfm3 rows onto matched_keys produced a row with no match — "
+        "matched_keys should be a subset of tsfm3's own instance keys by construction "
+        "(see the instance-set join above), so this would mean that invariant broke."
+    )
+    tsfm3_qp_ordered = tsfm3_ordered[quantile_cols].to_numpy().reshape(-1, 1, len(quantile_levels))
+    tsfm3_y_ordered = tsfm3_ordered["obs"].to_numpy().reshape(-1, 1)
+    lo_idx_e2, hi_idx_e2 = quantile_levels.index(0.1), quantile_levels.index(0.9)
+    tsfm3_crps_instance = crps_from_quantiles(tsfm3_y_ordered, tsfm3_qp_ordered, quantile_levels).flatten()
+    tsfm3_coverage_indicator = (
+        (tsfm3_y_ordered[:, 0] >= tsfm3_qp_ordered[:, 0, lo_idx_e2])
+        & (tsfm3_y_ordered[:, 0] <= tsfm3_qp_ordered[:, 0, hi_idx_e2])
+    ).astype(float)
+    significance_rows = []
+    for n_days_e2, cached in sorted(e2_cache.items()):
+        k_e2, n_calendar_e2 = k_and_calendar_days(n_days_e2, n_pairs_full)
+        for metric_name, emos_arr, tsfm3_arr in [
+            ("crps", cached["crps_per_instance"], tsfm3_crps_instance),
+            ("coverage_80pct", cached["coverage_indicator"], tsfm3_coverage_indicator),
+        ]:
+            test_result = station_blocked_paired_test(emos_arr, tsfm3_arr, test_station_ids)
+            significance_rows.append({
+                "n_days": str(n_days_e2), "n_cases": k_e2, "n_calendar_days_equiv": n_calendar_e2,
+                "metric": metric_name, "method_a": "emos_pooled", "method_b": "tsfm3",
+                **test_result,
+            })
+            print(
+                f"E2 significance: N={n_days_e2} days (k={k_e2}), metric={metric_name}, "
+                f"emos_pooled vs tsfm3: mean diff(a-b)={test_result['block_mean_diff']:.4f}, "
+                f"t p={test_result['t_pvalue']:.4f}, wilcoxon p={test_result['wilcoxon_pvalue']:.4f}"
+            )
+
+    significance_df = pd.DataFrame(significance_rows)
+    write_result(
+        significance_df,
+        name="phase3_data_size_sweep_significance",
+        model_version="phase3-sweep-v6",
+        config={"quantile_levels": quantile_levels, "compared_n_days": sorted(e2_cache.keys())},
+    )
+
+    # --- Task 6 E3: low-N grid, k=1,2,3,5,7 (roughly N~=3,7,10,17,24 calendar days
+    # per DAYS_PER_CASE), driven by k DIRECTLY via n_days_for_exact_k (see its
+    # docstring) rather than by a human-friendly n_days label -- avoids the coarse
+    # rounding n_days_to_k would otherwise introduce at these very small N. Reuses
+    # sample_contiguous/fit_predict_pooled_emos/fit_predict_local_emos/
+    # compute_metrics verbatim on the SAME already-joined full_train/test_X/
+    # obs_values/test_station_ids as the main sweep loop above -- no new data
+    # loading, milliseconds per fit.
+    low_n_rows = []
+    for k_low in LOW_N_K_GRID:
+        synthetic_n_days = n_days_for_exact_k(k_low)
+        n_calendar_low = k_to_calendar_days(k_low)
+
+        train_contig_low = sample_contiguous(full_train, synthetic_n_days)
+        actual_k = len(train_contig_low[["year_idx", "time_idx"]].drop_duplicates())
+        assert actual_k == k_low, f"n_days_for_exact_k round-trip failed: wanted k={k_low}, got {actual_k}"
+
+        t0 = time.perf_counter()
+        pooled_preds_low, _ = _catch_overflow_warnings(fit_predict_pooled_emos, train_contig_low, quantile_levels, test_X)
+        pooled_fit_seconds_low = time.perf_counter() - t0
+        pooled_metrics_low = compute_metrics(obs_values, pooled_preds_low, quantile_levels)
+        low_n_rows.append({
+            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "method": "emos_pooled",
+            **pooled_metrics_low, "n_stations_covered": None, "fit_seconds": pooled_fit_seconds_low,
+        })
+        print(f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), method=emos_pooled: {pooled_metrics_low}")
+
+        t0 = time.perf_counter()
+        (local_preds_low, covered_mask_low, _), _ = _catch_overflow_warnings(
+            fit_predict_local_emos, train_contig_low, test_station_ids, test_X, quantile_levels
+        )
+        local_fit_seconds_low = time.perf_counter() - t0
+        n_stations_covered_low = len(np.unique(test_station_ids[covered_mask_low])) if covered_mask_low.any() else 0
+        if covered_mask_low.any():
+            local_metrics_low = compute_metrics(obs_values[covered_mask_low], local_preds_low[covered_mask_low], quantile_levels)
+        else:
+            local_metrics_low = {"crps": float("nan"), "coverage_80pct": float("nan"), "interval_width_k": float("nan")}
+        low_n_rows.append({
+            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "method": "emos_local",
+            **local_metrics_low, "n_stations_covered": n_stations_covered_low, "fit_seconds": local_fit_seconds_low,
+        })
+        print(
+            f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), method=emos_local "
+            f"(coverage {n_stations_covered_low}/{n_unique_test_stations} test stations): {local_metrics_low}"
+        )
+
+    low_n_df = pd.DataFrame(low_n_rows)
+    write_result(
+        low_n_df,
+        name="phase3_low_n_grid",
+        model_version="phase3-sweep-v6",
+        config={
+            "low_n_k_grid": LOW_N_K_GRID,
+            "quantile_levels": quantile_levels,
+            "local_emos_min_rows": LOCAL_EMOS_MIN_ROWS,
+            "days_per_case_measured": DAYS_PER_CASE,
+        },
+    )
+
+    # Breakpoints over the EXTENDED axis: union of the low-N grid's k=1..7 with the
+    # main sweep's existing contiguous-arm k axis (k=9,26,105,314,full) -- "the
+    # current k=9 number may not survive as the true breakpoint once k=1..7 are
+    # actually measured" (Task 6 E3 brief).
+    low_n_breakpoint_rows = []
+    for metric in ["crps", "coverage_80pct"]:
+        reference_value = tsfm3_row[metric]
+        for emos_variant in ["emos_pooled", "emos_local"]:
+            low_axis = low_n_df[low_n_df["method"] == emos_variant]
+            main_axis = sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == emos_variant)]
+            if emos_variant == "emos_local":
+                low_axis = low_axis[low_axis["n_stations_covered"].fillna(0) > 0]
+                main_axis = main_axis[main_axis["n_stations_covered"].fillna(0) > 0]
+            n_cases_axis = low_axis["k"].astype(float).tolist() + main_axis["n_cases"].astype(float).tolist()
+            method_values = low_axis[metric].tolist() + main_axis[metric].tolist()
+
+            bp, reason = breakpoint_and_direction(metric, n_cases_axis, method_values, reference_value)
+            bp_calendar = k_to_calendar_days(round(bp)) if bp is not None else None
+            low_n_breakpoint_rows.append({
+                "metric": metric, "emos_variant": emos_variant,
+                "breakpoint_n_cases": bp, "breakpoint_calendar_days": bp_calendar,
+                "crossing_direction": reason,
+            })
+            if bp is None:
+                print(f"E3 extended-axis breakpoint: metric={metric}, variant={emos_variant}: no crossing — {reason}")
+            else:
+                print(f"E3 extended-axis breakpoint: metric={metric}, variant={emos_variant}: {bp:.2f} cases (~{bp_calendar} calendar days) — {reason}")
+
+    low_n_breakpoints_df = pd.DataFrame(low_n_breakpoint_rows)
+    write_result(
+        low_n_breakpoints_df,
+        name="phase3_low_n_grid_breakpoints",
+        model_version="phase3-sweep-v6",
+        config={"low_n_k_grid": LOW_N_K_GRID, "quantile_levels": quantile_levels},
     )
 
     # --- Figure ---

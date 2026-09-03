@@ -77,3 +77,35 @@ def test_find_breakpoint_single_element_returns_none():
     # between — must return None, not raise (e.g. IndexError on an empty zip).
     bp = find_breakpoint([10], [5.0], reference_value=2.0, better="lower")
     assert bp is None
+
+
+# --- Task 6 E3: n_days_for_exact_k, the k-driven-sampling helper ---
+
+n_days_for_exact_k = data_size_sweep.n_days_for_exact_k
+n_days_to_k = data_size_sweep.n_days_to_k
+
+
+def test_n_days_for_exact_k_round_trips_exactly_for_the_low_n_grid():
+    # This is the crux of E3's "drive by k directly" requirement: converting k ->
+    # n_days -> k must return EXACTLY the original k, with no rounding drift, for
+    # every value in LOW_N_K_GRID -- a human-friendly integer n_days would not
+    # reliably satisfy this at small k (that's the whole reason E3 exists).
+    for k in data_size_sweep.LOW_N_K_GRID:
+        assert n_days_to_k(n_days_for_exact_k(k)) == k
+
+
+def test_n_days_for_exact_k_uses_measured_days_per_case():
+    k = 5
+    expected = k * data_size_sweep.DAYS_PER_CASE
+    assert n_days_for_exact_k(k) == pytest.approx(expected)
+
+
+def test_low_n_k_grid_matches_task_6_e3_brief():
+    assert data_size_sweep.LOW_N_K_GRID == [1, 2, 3, 5, 7]
+
+
+# --- Task 6 E1: LAMBDA_CLIM is a real, documented constant, not accidentally unset ---
+
+def test_lambda_clim_is_a_positive_finite_constant():
+    assert isinstance(data_size_sweep.LAMBDA_CLIM, float)
+    assert data_size_sweep.LAMBDA_CLIM > 1.0  # must actually inflate, not shrink, the spread
