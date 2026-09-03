@@ -14,8 +14,16 @@ from zeropp.config import load_experiment_config
 from zeropp.eval.calibration import empirical_coverage, pit_values, reliability_index
 from zeropp.eval.results import write_result
 from zeropp.eval.scores import crps_from_quantiles, mae_from_quantiles, twcrps_from_quantiles
+from zeropp.eval.significance import block_bootstrap_skill_score_ci, station_blocked_paired_test
 
 RAW_RESULTS_PATH = "results/phase2_comparison_raw.parquet"
+
+
+def per_instance_crps(df_method: pd.DataFrame, quantile_levels: list[float]) -> np.ndarray:
+    quantile_cols = [f"q{q}" for q in quantile_levels]
+    quantile_preds = df_method[quantile_cols].to_numpy().reshape(-1, 1, len(quantile_levels))
+    obs = df_method["obs"].to_numpy().reshape(-1, 1)
+    return crps_from_quantiles(obs, quantile_preds, quantile_levels).flatten()
 
 
 def summarize_method(df_method: pd.DataFrame, quantile_levels: list[float]) -> dict:
@@ -66,6 +74,34 @@ def main() -> None:
         model_version="phase3-summary-v1",
         config={"quantile_levels": quantile_levels, "source": RAW_RESULTS_PATH},
     )
+
+    # Statistical significance: block bootstrap CI + station-blocked paired test.
+    # Real confirmed method values are raw_ensemble / emos / tsfm3 (see
+    # docs/phase2_results_schema.md), NOT the brief's guessed "timesfm3".
+    raw_ens = raw[raw["method"] == "raw_ensemble"].reset_index(drop=True)
+    emos = raw[raw["method"] == "emos"].reset_index(drop=True)
+    tsfm = raw[raw["method"] == "tsfm3"].reset_index(drop=True)
+
+    crps_raw = per_instance_crps(raw_ens, quantile_levels)
+    crps_emos = per_instance_crps(emos, quantile_levels)
+    crps_tsfm = per_instance_crps(tsfm, quantile_levels)
+    stations = tsfm["station_id"].to_numpy()
+
+    print("\n===== Significance: TimesFM-3 vs raw ensemble =====")
+    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_raw, stations, seed=0)
+    print(f"CRPS skill score (block bootstrap, 95% CI): {point:.4f} [{lo:.4f}, {hi:.4f}]")
+    test_result = station_blocked_paired_test(crps_raw, crps_tsfm, stations)
+    print(f"Station-blocked paired test (n={test_result['n_blocks']} stations): "
+          f"mean diff={test_result['block_mean_diff']:.4f}, "
+          f"t p-value={test_result['t_pvalue']:.4f}, wilcoxon p-value={test_result['wilcoxon_pvalue']:.4f}")
+
+    print("\n===== Significance: TimesFM-3 vs EMOS =====")
+    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_emos, stations, seed=0)
+    print(f"CRPS skill score (block bootstrap, 95% CI): {point:.4f} [{lo:.4f}, {hi:.4f}]")
+    test_result = station_blocked_paired_test(crps_emos, crps_tsfm, stations)
+    print(f"Station-blocked paired test (n={test_result['n_blocks']} stations): "
+          f"mean diff={test_result['block_mean_diff']:.4f}, "
+          f"t p-value={test_result['t_pvalue']:.4f}, wilcoxon p-value={test_result['wilcoxon_pvalue']:.4f}")
 
 
 if __name__ == "__main__":
