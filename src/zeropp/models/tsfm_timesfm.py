@@ -20,9 +20,15 @@ class TimesFM3(Postprocessor):
     this first slice. See task-5-report.md for the explicit limitation note.
     """
 
-    def __init__(self, quantile_levels: list[float], weights_path: str = DEFAULT_WEIGHTS_PATH):
+    def __init__(
+        self,
+        quantile_levels: list[float],
+        weights_path: str = DEFAULT_WEIGHTS_PATH,
+        device: str = "cpu",
+    ):
         self.quantile_levels = quantile_levels
         self.weights_path = weights_path
+        self.device = device
         self._model = None
 
     def fit(self, train) -> "TimesFM3":
@@ -38,7 +44,7 @@ class TimesFM3(Postprocessor):
             )
 
         if self._model is None:
-            self._model = timesfm.TimesFM3Forecaster.from_pretrained(self.weights_path, device="cpu")
+            self._model = timesfm.TimesFM3Forecaster.from_pretrained(self.weights_path, device=self.device)
 
         contexts = X["context"]
         ens_means = X["past_future_ens_mean"]
