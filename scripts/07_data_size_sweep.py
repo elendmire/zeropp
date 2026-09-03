@@ -410,6 +410,11 @@ def main() -> None:
         for m in per_method_keys
     )
     print(f"instance-set join: raw_ensemble/emos/tsfm3 share an identical instance-key set: {methods_share_identical_keys}")
+    assert methods_share_identical_keys, (
+        "raw_ensemble/emos/tsfm3 instance keys diverge in results/phase2_comparison_raw.parquet — "
+        "filtering every method to tsfm3's key set would silently score raw_ensemble/emos on the "
+        "wrong instances. This must not be silently tolerated (see fix-round-1 finding 1)."
+    )
 
     matched_keys = test_keys_df.merge(canonical_key_set, on=key_cols, how="inner")
     n_test_instances = len(test_keys_df)
