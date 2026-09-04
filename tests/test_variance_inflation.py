@@ -88,6 +88,17 @@ def test_from_fixed_multiplier_needs_no_fit_call():
     assert preds.shape == (2, 1, 9)
 
 
+def test_fit_on_a_fixed_multiplier_instance_is_a_noop(synthetic_train_df):
+    # Fix-round-1 finding 4: from_fixed_multiplier(1.5).fit(train) must NOT
+    # overwrite the fixed multiplier with a data-derived one -- synthetic_train_df's
+    # true generating multiplier is 2.0, so a silent overwrite would change 1.5 ->
+    # ~2.0 and this assertion would fail.
+    model = VarianceInflationBaseline.from_fixed_multiplier(1.5, quantile_levels=QUANTILE_LEVELS)
+    fitted = model.fit(synthetic_train_df)
+    assert fitted.multiplier == pytest.approx(1.5)
+    assert fitted is model
+
+
 def test_larger_multiplier_gives_wider_intervals():
     narrow = VarianceInflationBaseline.from_fixed_multiplier(1.0, quantile_levels=QUANTILE_LEVELS)
     wide = VarianceInflationBaseline.from_fixed_multiplier(2.0, quantile_levels=QUANTILE_LEVELS)

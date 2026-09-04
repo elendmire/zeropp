@@ -15,6 +15,7 @@ bugs in code that CALLS find_breakpoint were only caught by eyeballing a figure.
 crossing, no crossing, a NaN row, a non-monotonic curve, and a single-element array.
 """
 import importlib.util
+import math
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,27 @@ def test_low_n_k_grid_matches_task_6_e3_brief():
 def test_lambda_clim_is_a_positive_finite_constant():
     assert isinstance(data_size_sweep.LAMBDA_CLIM, float)
     assert data_size_sweep.LAMBDA_CLIM > 1.0  # must actually inflate, not shrink, the spread
+    # Fix-round-1 minor item: the test's own name promises "finite" but never
+    # actually asserted it -- math.isfinite rejects both inf and nan (isinstance
+    # float + > 1.0 alone would pass for float("inf")).
+    assert math.isfinite(data_size_sweep.LAMBDA_CLIM)
+
+
+# --- Fix-round-1 finding 3: bp_to_calendar_days, the single-rounding breakpoint ->
+# calendar-days conversion that replaces the double-rounding k_to_calendar_days(round(bp)) ---
+
+bp_to_calendar_days = data_size_sweep.bp_to_calendar_days
+DAYS_PER_CASE = data_size_sweep.DAYS_PER_CASE
+
+
+def test_bp_to_calendar_days_rounds_once_not_twice():
+    # This is the exact regression case from the review finding: bp=1.64 previously
+    # went through k_to_calendar_days(round(1.64)) = k_to_calendar_days(2) = 7 days
+    # (2 * 3.4833 rounded), inflating the true 1.64 * 3.4833 ~= 5.71 -> 6 days.
+    bp = 1.64
+    assert bp_to_calendar_days(bp) == round(bp * DAYS_PER_CASE)
+    assert bp_to_calendar_days(bp) != round(round(bp) * DAYS_PER_CASE)
+
+
+def test_bp_to_calendar_days_none_passes_through():
+    assert bp_to_calendar_days(None) is None

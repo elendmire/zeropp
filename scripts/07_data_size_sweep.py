@@ -183,6 +183,20 @@ def k_to_calendar_days(k: int) -> int:
     return round(k * DAYS_PER_CASE)
 
 
+def bp_to_calendar_days(bp: float | None) -> int | None:
+    """Fix-round-1 finding 3: convert an interpolated (non-integer) breakpoint k
+    directly to calendar days via a SINGLE rounding at the very end
+    (round(bp * DAYS_PER_CASE)), instead of rounding bp to an integer k FIRST and
+    THEN converting via k_to_calendar_days (round(k) then round(k * DAYS_PER_CASE)
+    again). The double-rounding version inflates the reported label: e.g.
+    bp=1.64 previously rounded to k=2 first, then 2 * 3.4833 ~= 7 days -- overstating
+    the true 1.64 * 3.4833 ~= 5.7 days by ~23%. Returns None if bp is None (no
+    crossing observed)."""
+    if bp is None:
+        return None
+    return round(bp * DAYS_PER_CASE)
+
+
 def n_days_for_exact_k(k: int) -> float:
     """Task 6 E3: the inverse of n_days_to_k's ratio, chosen so that
     n_days_to_k(n_days_for_exact_k(k)) == k EXACTLY (round(k) == k for any integer
@@ -833,7 +847,7 @@ def main() -> None:
             method_values = arm_df[metric].tolist()
 
             bp, reason = breakpoint_and_direction(metric, n_cases_axis, method_values, reference_value)
-            bp_calendar = k_to_calendar_days(round(bp)) if bp is not None else None
+            bp_calendar = bp_to_calendar_days(bp)
             breakpoint_rows.append({
                 "metric": metric,
                 "emos_variant": emos_variant,
@@ -879,6 +893,16 @@ def main() -> None:
         "matched_keys should be a subset of tsfm3's own instance keys by construction "
         "(see the instance-set join above), so this would mean that invariant broke."
     )
+    # Fix-round-1 minor item: an explicit row-COUNT assertion alongside the notna
+    # check above -- a left-merge that (e.g. via a duplicate key on the right side)
+    # fans out to MORE rows than matched_keys would still pass the notna check
+    # (every row would still have a real "obs" value) while silently breaking the
+    # 1:1 row alignment station_blocked_paired_test's paired differential depends on.
+    assert len(tsfm3_ordered) == n_matched, (
+        f"tsfm3_ordered has {len(tsfm3_ordered)} rows but matched_keys (and therefore "
+        f"emos_pooled's e2_cache arrays) has {n_matched} -- the left-merge must be exactly "
+        "1:1, or the per-instance pairing used by station_blocked_paired_test is broken."
+    )
     tsfm3_qp_ordered = tsfm3_ordered[quantile_cols].to_numpy().reshape(-1, 1, len(quantile_levels))
     tsfm3_y_ordered = tsfm3_ordered["obs"].to_numpy().reshape(-1, 1)
     lo_idx_e2, hi_idx_e2 = quantile_levels.index(0.1), quantile_levels.index(0.9)
@@ -922,6 +946,21 @@ def main() -> None:
     # compute_metrics verbatim on the SAME already-joined full_train/test_X/
     # obs_values/test_station_ids as the main sweep loop above -- no new data
     # loading, milliseconds per fit.
+    #
+    # Column note (fix-round-1 minor item): this table's case-count column is named
+    # "k" (not "n_cases", as in the main sweep's phase3_data_size_sweep.parquet).
+    # Documented rather than unified: this table is driven BY k directly (see
+    # n_days_for_exact_k above) with no "n_days" label at all, so "k" is the more
+    # honest name here -- unifying to "n_cases" would suggest it was derived FROM an
+    # n_days axis the way the main sweep's column is, which it is not.
+    #
+    # Fix-round-1 finding 2: k=1 and k=2's contiguous draws are the two points the
+    # E3 breakpoint (k~1.64) actually rests on, and a single contiguous draw at each
+    # k has no replication. This adds the SAME 5-seed random arm the main sweep
+    # already uses (sample_random reused verbatim, identical pattern) at every
+    # LOW_N_K_GRID k, so those two points get a random-arm mean+std counterpart to
+    # compare against -- real new compute, but cheap (milliseconds per fit, same as
+    # the contiguous arm above).
     low_n_rows = []
     for k_low in LOW_N_K_GRID:
         synthetic_n_days = n_days_for_exact_k(k_low)
@@ -936,10 +975,12 @@ def main() -> None:
         pooled_fit_seconds_low = time.perf_counter() - t0
         pooled_metrics_low = compute_metrics(obs_values, pooled_preds_low, quantile_levels)
         low_n_rows.append({
-            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "method": "emos_pooled",
-            **pooled_metrics_low, "n_stations_covered": None, "fit_seconds": pooled_fit_seconds_low,
+            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "sampling_arm": "contiguous", "seed": None,
+            "method": "emos_pooled", **pooled_metrics_low,
+            "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+            "n_stations_covered": None, "fit_seconds": pooled_fit_seconds_low,
         })
-        print(f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), method=emos_pooled: {pooled_metrics_low}")
+        print(f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), arm=contiguous, method=emos_pooled: {pooled_metrics_low}")
 
         t0 = time.perf_counter()
         (local_preds_low, covered_mask_low, _), _ = _catch_overflow_warnings(
@@ -952,12 +993,53 @@ def main() -> None:
         else:
             local_metrics_low = {"crps": float("nan"), "coverage_80pct": float("nan"), "interval_width_k": float("nan")}
         low_n_rows.append({
-            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "method": "emos_local",
-            **local_metrics_low, "n_stations_covered": n_stations_covered_low, "fit_seconds": local_fit_seconds_low,
+            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "sampling_arm": "contiguous", "seed": None,
+            "method": "emos_local", **local_metrics_low,
+            "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+            "n_stations_covered": n_stations_covered_low, "fit_seconds": local_fit_seconds_low,
         })
         print(
-            f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), method=emos_local "
+            f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), arm=contiguous, method=emos_local "
             f"(coverage {n_stations_covered_low}/{n_unique_test_stations} test stations): {local_metrics_low}"
+        )
+
+        # --- fix-round-1 finding 2: random arm, 5 seeds, emos_pooled only (same
+        # scope restriction the main sweep already applies to its random arm --
+        # emos_local's per-station fits are out of scope for the random arm there
+        # too). sample_random is reused VERBATIM, driven by the same
+        # n_days_for_exact_k(k_low) synthetic n_days used for the contiguous arm
+        # above, so both arms draw exactly k_low cases. ---
+        seed_metrics_low = []
+        for seed in sweep_seeds:
+            train_rand_low = sample_random(full_train, synthetic_n_days, seed)
+            actual_k_rand = len(train_rand_low[["year_idx", "time_idx"]].drop_duplicates())
+            assert actual_k_rand == k_low, f"n_days_for_exact_k round-trip failed for the random arm: wanted k={k_low}, got {actual_k_rand}"
+            rand_preds_low, _ = _catch_overflow_warnings(fit_predict_pooled_emos, train_rand_low, quantile_levels, test_X)
+            rand_metrics_low = compute_metrics(obs_values, rand_preds_low, quantile_levels)
+            seed_metrics_low.append(rand_metrics_low)
+            low_n_rows.append({
+                "k": k_low, "n_calendar_days_equiv": n_calendar_low, "sampling_arm": "random", "seed": seed,
+                "method": "emos_pooled", **rand_metrics_low,
+                "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+                "n_stations_covered": None, "fit_seconds": None,
+            })
+        seed_df_low = pd.DataFrame(seed_metrics_low)
+        low_n_random_mean = {
+            "k": k_low, "n_calendar_days_equiv": n_calendar_low, "sampling_arm": "random_mean", "seed": None,
+            "method": "emos_pooled",
+            "crps": float(seed_df_low["crps"].mean()),
+            "coverage_80pct": float(seed_df_low["coverage_80pct"].mean()),
+            "interval_width_k": float(seed_df_low["interval_width_k"].mean()),
+            "crps_std": float(seed_df_low["crps"].std()),
+            "coverage_80pct_std": float(seed_df_low["coverage_80pct"].std()),
+            "interval_width_k_std": float(seed_df_low["interval_width_k"].std()),
+            "n_stations_covered": None, "fit_seconds": None,
+        }
+        low_n_rows.append(low_n_random_mean)
+        print(
+            f"E3 low-N grid: k={k_low} (~{n_calendar_low} days), arm=random_mean (5 seeds), method=emos_pooled: "
+            f"crps={low_n_random_mean['crps']:.4f} (std={low_n_random_mean['crps_std']:.4f}), "
+            f"coverage_80pct={low_n_random_mean['coverage_80pct']:.4f} (std={low_n_random_mean['coverage_80pct_std']:.4f})"
         )
 
     low_n_df = pd.DataFrame(low_n_rows)
@@ -967,6 +1049,7 @@ def main() -> None:
         model_version="phase3-sweep-v6",
         config={
             "low_n_k_grid": LOW_N_K_GRID,
+            "data_size_sweep_seeds": sweep_seeds,
             "quantile_levels": quantile_levels,
             "local_emos_min_rows": LOCAL_EMOS_MIN_ROWS,
             "days_per_case_measured": DAYS_PER_CASE,
@@ -981,7 +1064,11 @@ def main() -> None:
     for metric in ["crps", "coverage_80pct"]:
         reference_value = tsfm3_row[metric]
         for emos_variant in ["emos_pooled", "emos_local"]:
-            low_axis = low_n_df[low_n_df["method"] == emos_variant]
+            # sampling_arm == "contiguous" only (fix-round-1 finding 2 added
+            # "random"/"random_mean" rows to low_n_df for emos_pooled -- the
+            # breakpoint itself stays defined on the contiguous arm exactly as
+            # before, matching the main sweep's own breakpoint convention).
+            low_axis = low_n_df[(low_n_df["method"] == emos_variant) & (low_n_df["sampling_arm"] == "contiguous")]
             main_axis = sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == emos_variant)]
             if emos_variant == "emos_local":
                 low_axis = low_axis[low_axis["n_stations_covered"].fillna(0) > 0]
@@ -990,7 +1077,7 @@ def main() -> None:
             method_values = low_axis[metric].tolist() + main_axis[metric].tolist()
 
             bp, reason = breakpoint_and_direction(metric, n_cases_axis, method_values, reference_value)
-            bp_calendar = k_to_calendar_days(round(bp)) if bp is not None else None
+            bp_calendar = bp_to_calendar_days(bp)
             low_n_breakpoint_rows.append({
                 "metric": metric, "emos_variant": emos_variant,
                 "breakpoint_n_cases": bp, "breakpoint_calendar_days": bp_calendar,
@@ -1009,55 +1096,92 @@ def main() -> None:
         config={"low_n_k_grid": LOW_N_K_GRID, "quantile_levels": quantile_levels},
     )
 
-    # --- Figure ---
-    x_order = [str(n) for n in data_size_days]
-    x_labels = []
-    for n_days in data_size_days:
-        k, _ = k_and_calendar_days(n_days, n_pairs_full)
-        x_labels.append(f"{n_days}\n({k} cases)")
-
-    def _ordered(df_subset):
+    # --- Figure (fix-round-1 finding 5) ---
+    # Previously plotted against a categorical n_days axis built only from the main
+    # sweep's data_size_days -- var_inflation_trainfit/var_inflation_fixed (Task 6
+    # E1) and the E3 low-N grid (k=1,2,3,5,7) were computed and persisted but never
+    # drawn. Switched to a shared, log-scale n_cases (case count) x-axis: it is the
+    # one quantity every series (main sweep's k=9..4180 AND the low-N grid's k=1..7,
+    # which has no n_days label of its own at all) actually shares, so both regions
+    # can appear as one continuous picture instead of two disconnected axes.
+    def _by_n_cases(df_subset, n_cases_col="n_cases"):
         d = df_subset.copy()
-        d["n_days"] = pd.Categorical(d["n_days"], categories=x_order, ordered=True)
-        return d.sort_values("n_days")
+        d = d[d[n_cases_col] > 0]
+        return d.sort_values(n_cases_col)
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 12), sharex=True)
+    pooled_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "emos_pooled")])
+    rand_mean = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "random_mean") & (sweep_df["method"] == "emos_pooled")])
+    local_contig = _by_n_cases(sweep_df[
+        (sweep_df["sampling_arm"] == "contiguous")
+        & (sweep_df["method"] == "emos_local")
+        & (sweep_df["n_stations_covered"].fillna(0) > 0)
+    ])
+    drn_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "drn")])
+    # New (Task 6 E1): variance-inflation trainfit curve, refit at every N like EMOS/DRN above.
+    vi_trainfit_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "var_inflation_trainfit")])
+
+    # New (Task 6 E3): low-N grid points, on the SAME n_cases axis via low_n_df's "k" column.
+    low_pooled_contig = _by_n_cases(low_n_df[(low_n_df["sampling_arm"] == "contiguous") & (low_n_df["method"] == "emos_pooled")], "k")
+    low_pooled_rand_mean = _by_n_cases(low_n_df[(low_n_df["sampling_arm"] == "random_mean") & (low_n_df["method"] == "emos_pooled")], "k")
+    low_local_contig = _by_n_cases(low_n_df[
+        (low_n_df["sampling_arm"] == "contiguous")
+        & (low_n_df["method"] == "emos_local")
+        & (low_n_df["n_stations_covered"].fillna(0) > 0)
+    ], "k")
+
+    raw_val_row = sweep_df[sweep_df["method"] == "raw_ensemble"]
+    tsfm3_val_row = sweep_df[sweep_df["method"] == "tsfm3"]
+    # New (Task 6 E1(b)): genuinely zero-shot fixed-multiplier variance-inflation reference.
+    vi_fixed_row = sweep_df[sweep_df["method"] == "var_inflation_fixed"]
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 13), sharex=True)
     metrics = ["crps", "coverage_80pct", "interval_width_k"]
     ylabels = ["CRPS", "Coverage @ 80% nominal", "Interval width (K)"]
 
     for ax, metric, ylabel in zip(axes, metrics, ylabels):
-        pooled_contig = _ordered(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "emos_pooled")])
-        ax.plot(pooled_contig["n_days"].astype(str), pooled_contig[metric], marker="o", linestyle="-", label="EMOS pooled (contiguous)")
-
-        rand_mean = _ordered(sweep_df[(sweep_df["sampling_arm"] == "random_mean") & (sweep_df["method"] == "emos_pooled")])
-        ax.plot(rand_mean["n_days"].astype(str), rand_mean[metric], marker=None, linestyle="--", label="EMOS pooled (random, mean)")
         std_col = f"{metric}_std"
-        lower = rand_mean[metric] - rand_mean[std_col]
-        upper = rand_mean[metric] + rand_mean[std_col]
-        ax.fill_between(rand_mean["n_days"].astype(str), lower, upper, alpha=0.2)
 
-        local_contig = sweep_df[
-            (sweep_df["sampling_arm"] == "contiguous")
-            & (sweep_df["method"] == "emos_local")
-            & (sweep_df["n_stations_covered"].fillna(0) > 0)
-        ]
-        local_contig = _ordered(local_contig)
-        ax.plot(local_contig["n_days"].astype(str), local_contig[metric], marker="^", linestyle="-", label="EMOS local (contiguous, covered stations)")
+        ax.plot(pooled_contig["n_cases"], pooled_contig[metric], marker="o", linestyle="-", color="tab:blue", label="EMOS pooled (contiguous)")
+        ax.plot(
+            low_pooled_contig["k"], low_pooled_contig[metric], marker="o", linestyle="none",
+            markerfacecolor="none", markeredgecolor="tab:blue", markersize=9,
+            label="EMOS pooled (contiguous, E3 low-N grid k=1..7)",
+        )
 
-        drn_contig = _ordered(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "drn")])
-        ax.plot(drn_contig["n_days"].astype(str), drn_contig[metric], marker="s", linestyle="-", label="DRN (contiguous)")
+        ax.plot(rand_mean["n_cases"], rand_mean[metric], marker=None, linestyle="--", color="tab:blue", alpha=0.6, label="EMOS pooled (random, mean)")
+        ax.fill_between(
+            rand_mean["n_cases"], rand_mean[metric] - rand_mean[std_col], rand_mean[metric] + rand_mean[std_col],
+            alpha=0.15, color="tab:blue",
+        )
+        ax.errorbar(
+            low_pooled_rand_mean["k"], low_pooled_rand_mean[metric], yerr=low_pooled_rand_mean[std_col],
+            fmt="x", linestyle="none", color="tab:blue", alpha=0.6,
+            label="EMOS pooled (random, mean +/- std, E3 low-N grid)",
+        )
 
-        raw_val = sweep_df[sweep_df["method"] == "raw_ensemble"][metric].iloc[0]
-        ax.axhline(raw_val, linestyle=":", label="Raw ensemble (N-independent)")
-        tsfm3_val = sweep_df[sweep_df["method"] == "tsfm3"][metric].iloc[0]
-        ax.axhline(tsfm3_val, linestyle="-.", label="TimesFM-3 zero-shot (N-independent)")
+        ax.plot(local_contig["n_cases"], local_contig[metric], marker="^", linestyle="-", color="tab:orange", label="EMOS local (contiguous, covered stations)")
+        ax.plot(
+            low_local_contig["k"], low_local_contig[metric], marker="^", linestyle="none",
+            markerfacecolor="none", markeredgecolor="tab:orange", markersize=9,
+            label="EMOS local (contiguous, E3 low-N grid k=1..7)",
+        )
 
+        ax.plot(drn_contig["n_cases"], drn_contig[metric], marker="s", linestyle="-", color="tab:green", label="DRN (contiguous)")
+
+        ax.plot(vi_trainfit_contig["n_cases"], vi_trainfit_contig[metric], marker="D", linestyle="-", color="tab:purple", label="Variance-inflation, trainfit (contiguous)")
+
+        raw_val = raw_val_row[metric].iloc[0]
+        ax.axhline(raw_val, linestyle=":", color="gray", label="Raw ensemble (N-independent)")
+        tsfm3_val = tsfm3_val_row[metric].iloc[0]
+        ax.axhline(tsfm3_val, linestyle="-.", color="black", label="TimesFM-3 zero-shot (N-independent)")
+        vi_fixed_val = vi_fixed_row[metric].iloc[0]
+        ax.axhline(vi_fixed_val, linestyle=":", color="tab:purple", label="Variance-inflation, fixed lambda=1.5 (N-independent)")
+
+        ax.set_xscale("log")
         ax.set_ylabel(ylabel)
 
-    axes[0].legend(loc="best", fontsize=8)
-    axes[-1].set_xlabel("Training data size")
-    axes[-1].set_xticks(range(len(x_order)))
-    axes[-1].set_xticklabels(x_labels)
+    axes[0].legend(loc="best", fontsize=7)
+    axes[-1].set_xlabel("Training data size (cases, log scale)")
     fig.tight_layout()
 
     os.makedirs("figures", exist_ok=True)

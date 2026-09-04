@@ -82,6 +82,11 @@ fit_predict_pooled_emos = _sweep.fit_predict_pooled_emos
 fit_predict_local_emos = _sweep.fit_predict_local_emos
 compute_metrics = _sweep.compute_metrics
 breakpoint_and_direction = _sweep.breakpoint_and_direction
+# Fix-round-1 minor item: E5b's pooled/local EMOS fits previously called
+# fit_predict_pooled_emos/fit_predict_local_emos directly, bypassing the
+# overflow-warning-counting wrapper Task 4 established for exactly these two
+# functions in scripts/07_data_size_sweep.py. Reused verbatim here too.
+_catch_overflow_warnings = _sweep._catch_overflow_warnings
 k_and_calendar_days = _sweep.k_and_calendar_days
 LAMBDA_CLIM = _sweep.LAMBDA_CLIM
 
@@ -302,8 +307,16 @@ def main() -> None:
             continue
         k, n_calendar = k_and_calendar_days(n_days, n_pairs_full)
 
-        pooled_preds = fit_predict_pooled_emos(train_contig, quantile_levels, test_X)
-        local_preds, covered_mask, _ = fit_predict_local_emos(train_contig, test_station_ids, test_X, quantile_levels)
+        pooled_preds, n_overflow_pooled = _catch_overflow_warnings(fit_predict_pooled_emos, train_contig, quantile_levels, test_X)
+        (local_preds, covered_mask, _), n_overflow_local = _catch_overflow_warnings(
+            fit_predict_local_emos, train_contig, test_station_ids, test_X, quantile_levels
+        )
+        if n_overflow_pooled or n_overflow_local:
+            print(
+                f"E5b: N={n_days} days: {n_overflow_pooled} pooled + {n_overflow_local} local "
+                "'overflow encountered in exp' RuntimeWarning(s) during EMOS optimization "
+                "(proxy for potential optimizer instability, not a definitive non-convergence signal)."
+            )
 
         for low, high, label in LEAD_TIME_BUCKETS:
             bucket_mask = lead_buckets_matched == label

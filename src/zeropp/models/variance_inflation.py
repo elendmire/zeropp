@@ -31,19 +31,34 @@ class VarianceInflationBaseline(Postprocessor):
         under-dispersion inflation factor (see scripts/07_data_size_sweep.py's
         LAMBDA_CLIM constant and comment for the citation and its caveats), matching
         TimesFM-3's own zero-shot status.
+
+    Fix-round-1 finding 4: an instance created via from_fixed_multiplier is
+    PERMANENTLY fixed -- calling .fit(train) on it (e.g. by accident, or via generic
+    code that calls .fit() on every Postprocessor uniformly) is a no-op that returns
+    self unchanged, rather than silently overwriting the fixed multiplier with a
+    data-derived one. Without this guard,
+    `VarianceInflationBaseline.from_fixed_multiplier(1.5).fit(train)` would quietly
+    stop being the zero-shot baseline E1(b) is supposed to be.
     """
 
     def __init__(self, quantile_levels: list[float]):
         self.quantile_levels = quantile_levels
         self.multiplier = None
+        self._fixed = False
 
     @classmethod
     def from_fixed_multiplier(cls, multiplier: float, quantile_levels: list[float]) -> "VarianceInflationBaseline":
         instance = cls(quantile_levels)
         instance.multiplier = float(multiplier)
+        instance._fixed = True
         return instance
 
     def fit(self, train) -> "VarianceInflationBaseline":
+        if self._fixed:
+            # Fix-round-1 finding 4: from_fixed_multiplier's whole point is a
+            # multiplier that is NOT derived from any training data -- fit() must
+            # not be allowed to silently overwrite it.
+            return self
         obs = np.asarray(train["t2m_obs"])
         ens_mean = np.asarray(train["ens_mean"])
         ens_var = np.asarray(train["ens_var"])
