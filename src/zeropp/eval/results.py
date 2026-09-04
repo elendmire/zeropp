@@ -50,8 +50,15 @@ def _source_tree_sha256() -> str:
         if not root.is_dir():
             continue
         for path in root.rglob("*"):
-            if path.is_file():
-                files.append(path)
+            if not path.is_file():
+                continue
+            if "__pycache__" in path.parts:
+                continue
+            if path.suffix in (".pyc", ".pyo"):
+                continue
+            if path.name == ".DS_Store":
+                continue
+            files.append(path)
     for path in sorted(files, key=lambda p: p.relative_to(REPO_ROOT).as_posix()):
         relpath = path.relative_to(REPO_ROOT).as_posix()
         hasher.update(relpath.encode("utf-8"))
