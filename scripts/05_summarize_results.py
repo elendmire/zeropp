@@ -47,7 +47,8 @@ def summarize_method(df_method: pd.DataFrame, quantile_levels: list[float]) -> d
 
 
 def main() -> None:
-    quantile_levels = load_experiment_config().quantile_levels
+    config = load_experiment_config()
+    quantile_levels = config.quantile_levels
     raw = pd.read_parquet(RAW_RESULTS_PATH)
 
     rows = []
@@ -87,8 +88,16 @@ def main() -> None:
     crps_tsfm = per_instance_crps(tsfm, quantile_levels)
     stations = tsfm["station_id"].to_numpy()
 
+    # Final-review fix (minor item): both seed=0 literals below were CLAUDE.md
+    # rule-5-violating hardcoded seeds (the rule is scoped to src/ by its literal
+    # text, but this script's bootstrap seed is exactly the kind of hidden
+    # randomness that rule exists to prevent) -- routed through
+    # config.seeds[0] instead, so the bootstrap's seed is configurable the same
+    # way every other seed in this project is.
+    bootstrap_seed = config.seeds[0]
+
     print("\n===== Significance: TimesFM-3 vs raw ensemble =====")
-    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_raw, stations, seed=0)
+    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_raw, stations, seed=bootstrap_seed)
     print(f"CRPS skill score (block bootstrap, 95% CI): {point:.4f} [{lo:.4f}, {hi:.4f}]")
     test_result = station_blocked_paired_test(crps_raw, crps_tsfm, stations)
     print(f"Station-blocked paired test (n={test_result['n_blocks']} stations): "
@@ -96,7 +105,7 @@ def main() -> None:
           f"t p-value={test_result['t_pvalue']:.4f}, wilcoxon p-value={test_result['wilcoxon_pvalue']:.4f}")
 
     print("\n===== Significance: TimesFM-3 vs EMOS =====")
-    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_emos, stations, seed=0)
+    point, lo, hi = block_bootstrap_skill_score_ci(crps_tsfm, crps_emos, stations, seed=bootstrap_seed)
     print(f"CRPS skill score (block bootstrap, 95% CI): {point:.4f} [{lo:.4f}, {hi:.4f}]")
     test_result = station_blocked_paired_test(crps_emos, crps_tsfm, stations)
     print(f"Station-blocked paired test (n={test_result['n_blocks']} stations): "

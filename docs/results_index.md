@@ -1,0 +1,36 @@
+# `results/*.parquet` index
+
+Final-review fix round, item 4. Two files answer the same "how many cases
+until EMOS beats TimesFM-3 on CRPS" question **contradictorily** with nothing
+linking them (`phase3_data_size_sweep_breakpoints.parquet` says "no crossing
+needed"; `phase3_low_n_grid_breakpoints.parquet` says a real crossing at
+k≈1.64). This table exists so a reader always knows which file is the current
+answer for a given claim before citing a number.
+
+Every file also has a `.json` sidecar (git SHA, model version, config hash;
+`git_dirty`/`source_tree_sha256` as of this fix round — see `README.md`'s
+"Provenance" note and `src/zeropp/eval/results.py`).
+
+| File | Produced by | N-axis / granularity | Lead-time scope | Status |
+|---|---|---|---|---|
+| `phase2_comparison_raw.parquet` | `scripts/04_run_tsfm.py` | none (zero-shot TimesFM-3 / raw ensemble / full-data EMOS, one row per instance) | all 21 lead times, unbucketed | **Base data.** Every other file in this table is derived from this one (directly or via the instance-set join documented in `scripts/07_data_size_sweep.py`). Backfilled with a provenance sidecar in this fix round (`scripts/_backfill_phase2_sidecar.py`) — it predates `write_result`. |
+| `phase3_summary_metrics.parquet` | `scripts/05_summarize_results.py` | none (pooled over everything) | pooled over all leads | Current. Headline sharpness/calibration numbers, no N-axis or lead-time breakdown at all. |
+| `phase3_lead_time_breakdown.parquet` | `scripts/06_lead_time_breakdown.py` | none (N-independent methods only: raw_ensemble/emos-full-N/tsfm3) | **per raw lead time** (21 individual `step_hours` values) | Current. Finest lead-time resolution in the project; feeds `phase3_lead_time_crossover.parquet`'s sign-flip analysis. |
+| `phase3_lead_time_crossover.parquet` | `scripts/08_lead_time_grouped_analysis.py` (E5a) | none | crossing points ALONG the lead-time axis (not an N-axis) | Current. First/durable sign-flip hours where TimesFM-3 vs EMOS's CRPS gap changes sign. |
+| `phase3_lead_time_grouped_emos.parquet` | `scripts/08_lead_time_grouped_analysis.py` (E4 ext.) | full N only (no sweep) | 3 buckets (0-24h/24-72h/72-120h) | Current. Isolates the effect of lead-time-blind vs. lead-time-aware EMOS *training*, holding N fixed at full. |
+| `phase3_data_size_sweep.parquet` | `scripts/07_data_size_sweep.py` | k = 9, 26, 105, 314, 4180 ("full") — n_days labels 30/90/365/1095/full, both contiguous and random(×5 seeds) arms | pooled over all leads | Current for its own tested N points, but **coarse at small N** — see breakpoints note below. Methods: `emos_pooled`, `emos_local`, `drn`, `var_inflation_trainfit`, plus N-independent `raw_ensemble`/`tsfm3`/`var_inflation_fixed` reference rows. |
+| `phase3_data_size_sweep_breakpoints.parquet` | `scripts/07_data_size_sweep.py` | breakpoints interpolated only across the sweep's own k=9..4180 axis | pooled over all leads | **PARTIALLY SUPERSEDED for `emos_pooled`/`emos_local`** — its "already better than tsfm3 at k=9, no crossing needed" claim for CRPS (and "already at/beyond reference" for coverage) was computed on a grid that never tested k<9, so it silently absorbed the real k≈1.64/k≈8.35 crossings into "already there." **Use `phase3_low_n_grid_breakpoints.parquet` instead for any `emos_pooled`/`emos_local` CRPS or coverage_80pct headline claim.** Still the ONLY breakpoint source for `drn` and `var_inflation_trainfit` (neither was re-tested on the low-N grid), so it is NOT superseded for those two methods. |
+| `phase3_low_n_grid.parquet` | `scripts/07_data_size_sweep.py` (E3) | k = 1, 2, 3, 5, 7 (contiguous + random×5-seed arms) — finer resolution than the main sweep's smallest point (k=9) | pooled over all leads | Current. Purpose-built to test whether the main sweep's k=9 breakpoint survives at smaller k; it does not (see next row). |
+| `phase3_low_n_grid_breakpoints.parquet` | `scripts/07_data_size_sweep.py` (E3) | breakpoints over the UNION of the low-N grid (k=1..7) and the main sweep's k=9..4180 axis | pooled over all leads | **Authoritative for `emos_pooled`/`emos_local` CRPS and coverage_80pct breakpoints project-wide** — CRPS crosses at k≈1.64 (~6 calendar days), coverage_80pct at k≈8.35 (~29 days), both far smaller than the main sweep alone showed. Supersedes `phase3_data_size_sweep_breakpoints.parquet` for these two methods (see that row). |
+| `phase3_data_size_sweep_significance.parquet` | `scripts/07_data_size_sweep.py` (E2) | 2 fixed N points only: k=9 (~31d), k=26 (~90d) | pooled over all leads | Current, but narrow scope (only the two N's Task 4's headline sentence named; not a full N-axis). |
+| `phase3_lead_time_bucketed_sweep.parquet` | `scripts/08_lead_time_grouped_analysis.py` (E5b) | SAME N axis as the main sweep (k=9..4180) | 3 buckets (0-24h/24-72h/72-120h) | Current, but **shares the main sweep's small-N coarseness** — it does NOT include the low-N grid's k=1..7 points, so within-bucket breakpoints below k=9 are untested (a disclosed gap, not yet filled). Also the table this fix round's `var_inflation_fixed`/`var_inflation_trainfit_full` N-independent reference rows were added to (final-review fix, item 1). |
+| `phase3_lead_time_bucketed_breakpoints.parquet` | `scripts/08_lead_time_grouped_analysis.py` (E5b) | breakpoints over k=9..4180 only (no k=1..7 low-N grid — see caveat above) | 3 buckets | Current for its tested range; the true within-bucket breakpoint below k=9 (analogous to the pooled k≈1.64 finding) has not been measured. Treat any "no crossing" claim in the 0-24h row with that gap in mind. |
+| `phase3_width_distribution.parquet` | `scripts/08_lead_time_grouped_analysis.py` (E1, lead-time part) | full N only (no sweep) | all-leads + 3 buckets | Current. Width DISTRIBUTION (mean/std/p10/p50/p90), not just mean — complements `phase3_data_size_sweep.parquet`'s `interval_width_k` column, which is mean-only. |
+| `phase3_short_lead_variance_inflation_check.parquet` | `scripts/08_lead_time_grouped_analysis.py` (final-review fix, item 1) | N-independent (`var_inflation_fixed`/`var_inflation_trainfit_full`) | 0-24h bucket only | New, this fix round. Direct answer to "does variance-inflation also beat TimesFM-3's CRPS at short lead" — see `README.md` and the task-6 report's Fix round 1 section for the real numbers and what they mean for the "nowcasting regime" framing. |
+
+## Rule of thumb for citing a breakpoint number
+
+- **Pooled EMOS CRPS/coverage breakpoint (all leads)** → `phase3_low_n_grid_breakpoints.parquet`, never `phase3_data_size_sweep_breakpoints.parquet`.
+- **DRN or variance-inflation-trainfit breakpoint** → `phase3_data_size_sweep_breakpoints.parquet` (the only source; not re-tested at low N).
+- **Any lead-time-bucketed (0-24h/24-72h/72-120h) breakpoint** → `phase3_lead_time_bucketed_breakpoints.parquet`, with the caveat that it, too, has not been re-tested below k=9.
+- **"Does TimesFM-3 uniquely win at short lead, or does variance-inflation also beat it there?"** → `phase3_short_lead_variance_inflation_check.parquet` (new this fix round), not an inference from the all-leads `phase3_data_size_sweep.parquet` table, which does not break out variance-inflation by lead-time bucket at all.

@@ -175,8 +175,15 @@ def main() -> None:
 
     first_flip_h, first_flip_reason = find_first_sign_flip(step_axis, diff_values)
     durable_flip_h, durable_flip_reason = find_last_sign_flip_into_permanent_positive(step_axis, diff_values)
-    print(f"E5a: first sign flip at ~{first_flip_h:.2f}h — {first_flip_reason}")
-    print(f"E5a: durable sign flip at ~{durable_flip_h:.2f}h — {durable_flip_reason}")
+    # Minor fix (final-review round): both finders can return None (no crossing
+    # found), which the previous unconditional f"{...:.2f}" would raise
+    # TypeError on -- guarded with a None-safe formatter rather than assuming a
+    # crossing always exists.
+    def _fmt_h(h: float | None) -> str:
+        return f"~{h:.2f}h" if h is not None else "none found"
+
+    print(f"E5a: first sign flip at {_fmt_h(first_flip_h)} — {first_flip_reason}")
+    print(f"E5a: durable sign flip at {_fmt_h(durable_flip_h)} — {durable_flip_reason}")
 
     e5a_df = pd.DataFrame([
         {"crossover_type": "first_sign_flip", "step_hours": first_flip_h, "reason": first_flip_reason},
@@ -252,6 +259,17 @@ def main() -> None:
     unique_pairs_full = full_train_lead[["year_idx", "time_idx"]].drop_duplicates()
     n_pairs_full = len(unique_pairs_full)
     full_train_blind = full_train_lead[["station_id", "ens_mean", "ens_var", "t2m_obs"]]
+
+    # Final-review fix (item 1): moved up from just before the E1 width-
+    # distribution section (this script used to fit these AFTER writing the E5b
+    # bucketed CRPS/coverage table, so they were never available to add to that
+    # table). Both variants are N-independent (no training-size axis), exactly
+    # like raw_ensemble/tsfm3, so they belong in E5b's "N-independent reference"
+    # loop below -- see that loop and the printed short-lead comparison after it.
+    vi_trainfit_full = VarianceInflationBaseline(quantile_levels=quantile_levels).fit(full_train_blind)
+    vi_trainfit_preds = vi_trainfit_full.predict_quantiles(test_X)
+    vi_fixed_model = VarianceInflationBaseline.from_fixed_multiplier(LAMBDA_CLIM, quantile_levels=quantile_levels)
+    vi_fixed_preds = vi_fixed_model.predict_quantiles(test_X)
 
     # ================= E4 extension: pooled-across-leads vs. per-bucket-trained EMOS =================
     pooled_all_leads_model = EMOS(quantile_levels=quantile_levels).fit(full_train_blind)
@@ -345,8 +363,23 @@ def main() -> None:
             })
         print(f"E5b: N={n_days} days (k={k}) bucketed pooled/local EMOS computed for all {len(LEAD_TIME_BUCKETS)} buckets")
 
-    # N-independent bucketed reference rows (raw_ensemble, tsfm3)
-    for method, qp, y in [("raw_ensemble", raw_ens_qp, raw_ens_y), ("tsfm3", tsfm3_qp, tsfm3_y)]:
+    # N-independent bucketed reference rows (raw_ensemble, tsfm3, and -- final-
+    # review fix, item 1 -- both variance-inflation variants. These were already
+    # computed above for the E1 width-distribution section but never added to
+    # this bucketed CRPS/coverage comparison, so the "TimesFM-3 uniquely wins at
+    # short lead" framing had never actually been checked against the baseline
+    # that already beats TimesFM-3 on pooled CRPS. obs_values is used as the
+    # observation array for both variants (not a separate *_y merge) because
+    # their predictions were computed directly on test_X, which is already
+    # row-aligned with obs_values/lead_buckets_matched -- see this script's
+    # earlier "Shared data loading" block.
+    reference_methods = [
+        ("raw_ensemble", raw_ens_qp, raw_ens_y),
+        ("tsfm3", tsfm3_qp, tsfm3_y),
+        ("var_inflation_fixed", vi_fixed_preds, obs_values),
+        ("var_inflation_trainfit_full", vi_trainfit_preds, obs_values),
+    ]
+    for method, qp, y in reference_methods:
         for low, high, label in LEAD_TIME_BUCKETS:
             bucket_mask = lead_buckets_matched == label
             ref_metrics_bucket = compute_metrics(y[bucket_mask], qp[bucket_mask], quantile_levels)
@@ -358,6 +391,43 @@ def main() -> None:
                 })
 
     e5b_df = pd.DataFrame(e5b_rows)
+
+    # Final-review fix (item 1): the real check this fix was dispatched to make --
+    # does variance-inflation ALSO beat TimesFM-3's CRPS at short lead (0-24h),
+    # where TimesFM-3's "nowcasting regime" headline lives? Printed AND persisted
+    # (short_lead_check_df below) so the comparison is reproducible from the
+    # result file alone, not just this run's stdout.
+    short_lead_label = LEAD_TIME_BUCKETS[0][2]
+    short_lead_rows = e5b_df[
+        (e5b_df["lead_time_bucket"] == short_lead_label) & (e5b_df["sampling_arm"] == "n_independent")
+    ].drop_duplicates(subset=["method"])
+    tsfm3_short_crps = short_lead_rows.loc[short_lead_rows["method"] == "tsfm3", "crps"].iloc[0]
+    print(f"\n=== Final-review fix, item 1: short-lead ({short_lead_label}) CRPS check ===")
+    print(f"tsfm3 (zero-shot reference): CRPS={tsfm3_short_crps:.4f}")
+    short_lead_check_rows = []
+    for method in ["var_inflation_fixed", "var_inflation_trainfit_full"]:
+        row = short_lead_rows.loc[short_lead_rows["method"] == method].iloc[0]
+        beats_tsfm3 = bool(row["crps"] < tsfm3_short_crps)
+        print(
+            f"{method}: CRPS={row['crps']:.4f}, coverage@80%={row['coverage_80pct']:.4f} -- "
+            f"{'BEATS' if beats_tsfm3 else 'does NOT beat'} tsfm3's short-lead CRPS "
+            f"(diff={row['crps'] - tsfm3_short_crps:+.4f})"
+        )
+        short_lead_check_rows.append({
+            "lead_time_bucket": short_lead_label,
+            "method": method,
+            "crps": float(row["crps"]),
+            "coverage_80pct": float(row["coverage_80pct"]),
+            "tsfm3_crps_reference": float(tsfm3_short_crps),
+            "beats_tsfm3_crps_at_short_lead": beats_tsfm3,
+        })
+    short_lead_check_df = pd.DataFrame(short_lead_check_rows)
+    write_result(
+        short_lead_check_df,
+        name="phase3_short_lead_variance_inflation_check",
+        model_version="phase3-lead-analysis-v1",
+        config={"lead_time_bucket": short_lead_label, "quantile_levels": quantile_levels, "lambda_clim": LAMBDA_CLIM},
+    )
     write_result(
         e5b_df,
         name="phase3_lead_time_bucketed_sweep",
@@ -403,11 +473,8 @@ def main() -> None:
     )
 
     # ================= E1 (lead-time-level part): width DISTRIBUTION comparison =================
-    vi_trainfit_full = VarianceInflationBaseline(quantile_levels=quantile_levels).fit(full_train_blind)
-    vi_trainfit_preds = vi_trainfit_full.predict_quantiles(test_X)
-    vi_fixed_model = VarianceInflationBaseline.from_fixed_multiplier(LAMBDA_CLIM, quantile_levels=quantile_levels)
-    vi_fixed_preds = vi_fixed_model.predict_quantiles(test_X)
-
+    # vi_trainfit_full/vi_fixed_model/*_preds computed earlier (right after
+    # full_train_blind, above) so E5b's bucketed comparison could reuse them too.
     width_by_method = {
         "tsfm3": _instance_width(tsfm3_qp, quantile_levels),
         "var_inflation_trainfit_full": _instance_width(vi_trainfit_preds, quantile_levels),
