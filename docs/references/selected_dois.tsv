@@ -97,3 +97,4 @@ B8	dirkson_2025_misdiagnosing_reliability	10.1002/qj.70186	Dirkson 2026 - misdia
 B8	broecker_2018_serial_dependence	10.1002/qj.3379	Brocker 2018 - reliability under serial dependence	HIGH
 B8	broecker_2020_stratified_rank	10.1002/qj.3778	Brocker 2020 - stratified rank histograms under serial dependence	MED
 B8b	diebold_1995_comparing_accuracy	10.1080/07350015.1995.10524599	Diebold & Mariano 1995 - the original test (JBES, not the 1994 NBER working paper)	CORE
+B8b	luger_2004_exact_tests	10.34989/swp-2004-2	Luger 2004 - exact distribution-free tests, contemporaneous correlation (Bank of Canada Staff Working Paper 04-2, never journal-published per a time-boxed search 2026-09-05)	HIGH
