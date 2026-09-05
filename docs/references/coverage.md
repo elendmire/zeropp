@@ -83,9 +83,38 @@ contamination argument.** Our claim that station weather data is unlikely to
 sit in TimesFM's pretraining corpus needs external grounding, not just
 assertion.
 
-**`coroneo_2020_small_samples` — governs the k=9 significance test.**
-Standard Diebold-Mariano is unreliable in small samples; fixed-smoothing
-asymptotics is the correct tool for our smallest-N comparisons.
+**`coroneo_2020_small_samples` — reviewed against our actual significance test 2026-09-05; NOT a vulnerability, but a naming clarification is needed.**
+The paper's abstract (Coroneo & Iacone 2020, *J. Applied Econometrics* 35(4),
+391-405): standard Diebold-Mariano's HAC-type long-run-variance estimator is
+size-distorted under "increasing-smoothing" asymptotics when there are few
+out-of-sample observations in a *single autocorrelated loss-differential
+series*; their fix ("fixed-smoothing asymptotics") holds the smoothing
+bandwidth fixed as a fraction of sample size, giving a correctly-sized test
+statistic even at small T.
+
+Our `zeropp.eval.significance.station_blocked_paired_test` does not use this
+class of estimator at all: it collapses the ~737,809 autocorrelated
+station×time×lead instances to ONE mean per station block *first*, then runs
+a plain paired t-test and Wilcoxon signed-rank test on those ~49
+(approximately independent) block means. A paired t-test's null distribution
+is exact under normality for any sample size -- it never relies on HAC/
+long-run-variance asymptotics, so it is not exposed to the specific failure
+mode this paper documents. (This is also exactly why the project's own docs
+already refuse to call this test "Diebold-Mariano" -- see `significance.py`'s
+docstring.)
+
+One naming correction worth making explicit: "our k=9 comparison" is not the
+sample the significance test runs on. k=9 is EMOS's *training*-set size (how
+many reforecast cases the model was fit on); the significance test itself
+always evaluates the fitted model's test-set performance aggregated to ~49
+station means, regardless of k. The already-known, real fragility in our
+approach is a different and more mundane one (flagged in Task 3/Task 6's own
+findings): a handful of outlier stations can dominate the ~49-point t-test's
+variance while the sign-majority still favors Wilcoxon significance,
+producing t-vs-Wilcoxon disagreement -- a moderate-N t-test weakness, not
+the small-T HAC-asymptotics problem Coroneo & Iacone address. No code change
+needed here; reporting both p-values with this caveat (already the project's
+practice) remains the right call.
 
 **`gneiting_2007_calibration_sharpness` — the basis of finding 2.**
 "Maximise sharpness subject to calibration" is the principle under which
