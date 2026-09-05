@@ -5,3 +5,5 @@ __pycache__/
 figures/*.png
 !figures/.gitkeep
 .DS_Store
+results/phase2_comparison_raw.parquet
+results/phase2_comparison_raw.json
