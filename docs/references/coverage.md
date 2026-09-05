@@ -9,38 +9,45 @@ recalled from model memory.**
 
 ## Block status
 
+**Updated 2026-09-05** after resolving `gap_fills.tsv` (14 targeted-search entries, 13 confirmed + added, 1 held for user confirmation — see below): 98/98 DOIs in `selected_dois.tsv` now resolve cleanly, `check_references.py` reports 0 errors / 1 warning against the real `refs.bib`.
+
 | Block | Topic | Selected | Target | Status |
 |---|---|---|---|---|
-| B1 | Statistical postprocessing foundations | 8 | ~8 | near-complete, 1 gap |
-| B2 | ML-based postprocessing | 13 | ~12 | near-complete, 1 gap |
+| B1 | Statistical postprocessing foundations | 9 | ~8 | **complete** (Vannitsem 2020/2021 review added) |
+| B2 | ML-based postprocessing | 14 | ~12 | **complete** (Muschinski 2023 MOS-RF added) |
 | B3 | EUPPBench and work on it | 6 | ~6 | complete |
-| B4 | Time series foundation models | 10 | ~10 | near-complete, 1 gap |
+| B4 | Time series foundation models | 10 | ~10 | near-complete, 1 gap (TimesFM 3.0 technical report/model card — not a Crossref/arXiv item, cite directly) |
 | B5 | TSFM benchmarking and contamination | 8 | ~6 | complete |
-| B6 | TSFMs applied in geoscience | 0 | ~6 | **EMPTY, blocking** |
+| B6 | TSFMs applied in geoscience | 6 | ~6 | **complete — no longer blocking** (all 6 gap-fill entries added: Sun 2026 streamflow, Bharadwaj 2026 Air Quality Arena, Huang 2026 wildfire PM2.5, Rollo 2026 particulate matter, Gao 2026 zero-inflation wrapper, Liu 2025 RNN-to-transformer hydrology) |
 | B7 | Covariate-aware zero-shot forecasting | 7 | ~6 | complete |
-| B8 | Probabilistic evaluation theory | 11 | ~9 | complete, 1 gap |
-| B8b | Forecast comparison / significance | 5 | ~4 | near-complete, 1 gap |
+| B8 | Probabilistic evaluation theory | 15 | ~9 | **complete** (Hamill 2001 rank histograms, Dirkson 2026 misdiagnosing reliability, Brocker 2018/2020 serial-dependence pair all added) |
+| B8b | Forecast comparison / significance | 6 | ~4 | near-complete, 1 gap held for confirmation (`luger_2021_exact_tests` — see below; Diebold 1995 corrected from a wrong auto-match, see bugs list) |
 | B9 | AI weather prediction models | 9 | ~7 | complete |
 | B10 | Downscaling and multivariate alternatives | 8 | ~6 | complete |
-| | **Total** | **85** | **~70** | trim LOW priority if over budget |
+| | **Total** | **98** | **~78** | trim LOW priority if over budget |
+
+## Held for user confirmation — NOT yet added to `selected_dois.tsv`
+
+`resolve_dois.py`'s title search for `luger_2021_exact_tests` ("Exact Tests of Equal Forecast Accuracy with an Application to the Term Structure of Interest Rates", requested as "Luger R., 2021") found no 2021 match anywhere (Crossref or web search). The exact same title, verified word-for-word, belongs to a **2004** Bank of Canada Staff Working Paper by Richard Luger, DOI `10.34989/swp-2004-2`, with no evidence of a later (2021 or otherwise) peer-reviewed republication found anywhere. This is almost certainly the right paper — the title is unusual and specific enough that a coincidental second work with the identical title is unlikely — but the 17-year year discrepancy is too large to be an online-first/print-issue artifact (unlike the ≤1-year deltas on Vannitsem/Dirkson below), so per "a wrong DOI is worse than a missing one," this was held rather than silently added with a corrected year. If confirmed, add: `B8b	luger_2021_exact_tests	10.34989/swp-2004-2	Luger 2004 - exact distribution-free tests under contemporaneous correlation	HIGH` (bibkey kept as `luger_2021_...` for backward compatibility with existing notes referencing it, OR rename to `luger_2004_exact_tests` — flag if renaming, since coverage.md's own prose below cites the old key).
+
+**Two entries resolved with a real, disclosed year discrepancy that IS just an online-first/print-issue convention (added as-is, not held):** `vannitsem_2020_postprocessing_review` requested as "2020" resolves to a BAMS article with Crossref `issued` date 2021-03 (title match 1.00, single unambiguous record — the 2020 figure was the online-early year); `dirkson_2025_misdiagnosing_reliability` requested as "2025" resolves to a QJRMS article with Crossref `issued` date 2026-03-27 (title match 1.00, single unambiguous record). Both kept their original bibkey year suffix for stability; the label field notes the real publication year.
 
 ## Gaps that must be filled before drafting
 
-These are known-essential works that did NOT appear in the harvested searches.
-Each needs a targeted search, then its DOI appended to `selected_dois.tsv`.
+**All resolved 2026-09-05 except one** (via `gap_fills.tsv` + `scripts/resolve_dois.py`, every row manually verified — see "DOIs needing manual repair" and "Held for user confirmation" above/below).
 
-| Block | Missing work | Why it is mandatory | Search query |
-|---|---|---|---|
-| B1 | Vannitsem et al. 2020, BAMS | The field's standard review; its absence reads as not knowing the literature | `statistical postprocessing weather forecasts review challenges big data` |
-| B2 | Muschinski et al. 2023, NPG | MOS random forests; works with <100 training observations, so it is a direct rival in exactly our small-N regime | `MOS random forests weather adaptive postprocessing` |
-| B4 | TimesFM 3.0 technical report / model card | We evaluate this exact model; citing only the 2023 TimesFM paper misattributes the architecture | not on Consensus; cite Google Research release + HF model card |
-| B6 | Sun & Sun 2026, Machine Learning: Earth | The closest structural template in geoscience; "are we there yet?" framing | `zero-shot streamflow forecasting time series foundation models CAMELS` |
-| B6 | Air Quality Arena 2026 | Large multi-station TSFM benchmark in an environmental domain | `air quality benchmark time series foundation models multi-country stations` |
-| B6 | Wildfire PM2.5 generalizability 2026 | Finds trained BiLSTM beats every TSFM on extremes; important counterweight | `foundation model generalizability extreme environmental events wildfire PM2.5` |
-| B6 | Rollo et al. 2026, Expert Syst. Appl. | Benchmarks TimesFM specifically on low-cost sensor PM2.5 | `foundation models particulate matter prediction low-cost sensors` |
-| B6 | Gao et al. 2026, WWW | Training-free wrapper fixing zero-inflation for frozen TSFMs; the wrapper pattern we discuss | `training-free zero-inflation correction rainfall time series foundation models` |
-| B8 | Hamill 2001, MWR | Rank histogram interpretation; our PIT diagnostics rest on it | `rank histogram ensemble verification interpretation` |
-| B8b | Diebold & Mariano 1995, JBES | The original test. We cite Diebold 2015 retrospective but not the source | `comparing predictive accuracy Diebold Mariano 1995` |
+| Block | Missing work | Status |
+|---|---|---|
+| B1 | Vannitsem et al., BAMS | **Resolved** — added as `vannitsem_2020_postprocessing_review` |
+| B2 | Muschinski et al. 2023, NPG | **Resolved** — added as `muschinski_2023_mos_random_forests` |
+| B4 | TimesFM 3.0 technical report / model card | **Still open** — not a Crossref/arXiv-indexable item (Google Research release + HF model card); cite directly by URL when drafting, not through this DOI pipeline |
+| B6 | Sun & Sun 2026, Machine Learning: Earth | **Resolved** — added as `sun_2026_streamflow_zeroshot` |
+| B6 | Air Quality Arena 2026 | **Resolved** — added as `bharadwaj_2026_air_quality_arena` (arXiv 2607.19381) |
+| B6 | Wildfire PM2.5 generalizability 2026 | **Resolved** — added as `huang_2026_wildfire_pm25` (arXiv 2607.07951) |
+| B6 | Rollo et al. 2026, Expert Syst. Appl. | **Resolved** — added as `rollo_2026_particulate_foundation` |
+| B6 | Gao et al. 2026, WWW | **Resolved** — added as `gao_2026_zero_inflation_wrapper` |
+| B8 | Hamill 2001, MWR | **Resolved** — DOI was truncated in the harvest, full DOI recovered via Crossref |
+| B8b | Diebold & Mariano 1995, JBES | **Resolved, with a real correction** — `resolve_dois.py`'s title search picked the wrong record (the 1994 NBER working-paper preprint, same title, different DOI/venue); the actual 1995 JBES article DOI was found via a container-title-filtered Crossref search and substituted before adding to `selected_dois.tsv` |
 
 ## DOIs needing manual repair — RESOLVED 2026-09-05
 
@@ -64,6 +71,21 @@ All 85 DOIs in `selected_dois.tsv` now resolve cleanly via `scripts/build_refs.s
 ## Findings in the harvest that bear on our own results
 
 Flagged because they affect claims in the paper, not just the bibliography.
+
+**Four papers actually read and assessed against our real code/results, 2026-09-05** (per explicit request — not just added to the bibliography, their arguments checked against what we actually compute):
+
+**`dirkson_2025_misdiagnosing_reliability` (Dirkson, QJRMS 2026) — partially applies; mitigation available and cheap.**
+Core mechanism (verified via the paper's abstract/arXiv 2512.02160): spread-error equality and flat rank histograms are only NECESSARY, not SUFFICIENT, conditions for reliability — a "climatological variance bias" in the ensemble members' covariance structure can make both diagnostics look perfect while the ensemble is not actually reliable up to second order. Our entire narrative rests on coverage/calibration diagnostics (raw ensemble severely under-dispersed, TimesFM-3 moderate, EMOS near-nominal), so this is a real, relevant critique to check against.
+
+Checked our actual code (`zeropp/eval/calibration.py`): we do NOT rely on a single coverage number in isolation — `reliability_index` (root-mean-square deviation of the full 10-bin PIT histogram from uniform) is already computed and reported (`scripts/05_summarize_results.py`) alongside `coverage_80pct`, not instead of it. A single-level coverage number (80% only) is exactly the kind of thin diagnostic Dirkson's critique targets; a full PIT-histogram-based reliability index across all 10 bins is a materially stronger, multi-level diagnostic that is harder (though not theoretically impossible) to fool with the specific covariance pathology the paper describes. **Action, not yet done**: this session's own reporting/discussion has been coverage@80%-centric — before drafting, `reliability_index` must be reported as co-primary evidence alongside coverage@80% wherever a calibration claim is made, not relegated to a supplementary table. This is a documentation/emphasis fix, not a code fix.
+
+**`luger_2004_exact_tests` (real year 2004, not 2021 as originally guessed — see "Held for user confirmation" above) — a real, unaddressed vulnerability; concrete fix identified, not yet implemented.**
+Confirmed by direct code inspection (`src/zeropp/eval/significance.py`): our station-blocked bootstrap/paired test aggregates per-instance losses to one mean per STATION, which correctly absorbs *temporal* autocorrelation within a station (repeated issue times, correlated lead times) — but does nothing about *spatial* dependence ACROSS the ~49 German stations, which the paper's framework (exact tests valid under contemporaneous correlation) is specifically built to handle. The same synoptic weather system affects many/most German stations simultaneously, so the ~49 station-block means are not independent draws — the effective sample size is smaller than 49, and both our block-bootstrap CI and our paired t-test/Wilcoxon p-values are very likely too optimistic (CIs too narrow, p-values too small) as a result. This directly threatens the smallest, most fragile finding in the project: the 0.0065 coverage-gap significance test at k=9.
+
+**The fix is genuinely cheap given the current code**: `block_bootstrap_skill_score_ci` and `station_blocked_paired_test` both take a generic `block_ids` array — nothing in either function is hardcoded to "station." Every current caller happens to pass `station_id` as `block_ids`; the same functions can be called again passing a date/synoptic-period identifier (e.g. `valid_time`'s calendar date) instead, with zero changes to `significance.py` itself. Preferred plan (matches the user's stated preference): add a day-blocked re-analysis alongside the existing station-blocked one for the project's key significance claims (Task 4's k=9 coverage gap, Task 6's E2 CRPS/coverage gaps, Task 3's lead-time-crossover significance) and report both. If they agree closely, the station-blocked result is robust to this critique after all (spatial dependence wasn't actually inflating the apparent significance much in practice); if they diverge, the day-blocked (more conservative) number is the one that should be quoted in the paper, with the divergence itself reported as a real finding about the danger of ignoring cross-station synoptic dependence. **Not yet implemented — flagged as the next concrete task**, since it requires a real (cheap, CPU-only) re-run against the already-persisted `results/*.parquet` files on `altay`, not a documentation-only fix.
+
+**`broecker_2018_serial_dependence` + `broecker_2020_stratified_rank` (Bröcker, QJRMS 2018/2020) — checked against our actual PIT code; does NOT apply, no code or framing change needed.**
+Both papers' critique targets a SPECIFIC failure mode: classical rank-histogram-flatness goodness-of-fit TESTS (e.g. Pearson's chi-squared) assume independent ranks and give invalid (over-confident) p-values when ranks are serially dependent, which ours genuinely are. Checked our actual code (`zeropp/eval/calibration.py`): `pit_histogram` and `reliability_index` are purely DESCRIPTIVE — a bin-count histogram and a root-mean-square deviation from uniform, respectively. Neither computes a hypothesis test, a p-value, or a "statistically flat" claim anywhere in this project. We only ever compare these descriptive numbers ACROSS methods (e.g. "EMOS-local's reliability_index is lower than raw ensemble's"), never claim "method X's PIT is significantly/perfectly flat at p<0.05" — the exact claim type Bröcker's papers show is invalid under serial dependence. Since we never make that claim, the critique's specific failure mode doesn't apply to anything we currently report. Still worth citing as evidence we're aware of the literature on this exact point (and as a caveat: if a future PIT hypothesis test is ever added, it must use Bröcker's serial-dependence-corrected version, not a naive chi-squared test).
 
 **`zhang_2025_context_parroting` — read before finalising the framing.**
 "Context parroting: a simple but tough-to-beat baseline for foundation models

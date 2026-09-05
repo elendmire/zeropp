@@ -53,21 +53,38 @@ tail -n +2 "$TSV" | while IFS=$'\t' read -r block bibkey doi label priority; do
   # and that page can contain a line starting with "@" (e.g. a CSS @media
   # rule), which used to fool a naive "does any line start with @" check into
   # silently accepting the HTML as a valid bib entry. Verified on this exact
-  # dataset: this is what happened to a truncated legacy-AMS DOI. Guard against
-  # it explicitly: reject non-200, reject any HTML markers anywhere in the
-  # body, and require the first non-blank character of the body to be "@".
+  # dataset: this is what happened to a truncated legacy-AMS DOI, and the fix
+  # was tightened further after that first fix still relied on only two of
+  # three independent signals -- now ALL THREE must hold, not just one or two:
+  # (a) the first non-blank character of the body is "@"; (b) the body
+  # contains an actual doi/DOI field (an HTML error page could in principle
+  # mention the string "doi" without being a bib entry, and a genuine bib
+  # entry always carries one); (c) the body contains no HTML markers anywhere.
+  # Any single one of these failing is treated as a failed fetch.
   is_valid=1
   [ "$http_code" = "200" ] || is_valid=0
   [ -n "$bib" ] || is_valid=0
-  if [ "$is_valid" -eq 1 ] && printf '%s' "$bib" | grep -qi '<!doctype\|<html'; then
-    is_valid=0
-  fi
+
+  starts_with_at=0
   if [ "$is_valid" -eq 1 ]; then
     first_line=$(printf '%s' "$bib" | grep -m1 '[^[:space:]]' | sed 's/^[[:space:]]*//')
     case "$first_line" in
-      @*) ;;
-      *) is_valid=0 ;;
+      @*) starts_with_at=1 ;;
     esac
+  fi
+
+  has_doi_field=0
+  if [ "$is_valid" -eq 1 ] && printf '%s' "$bib" | grep -qiE '(^|[,{[:space:]])doi[[:space:]]*=' ; then
+    has_doi_field=1
+  fi
+
+  has_html_marker=0
+  if [ "$is_valid" -eq 1 ] && printf '%s' "$bib" | grep -qi '<!doctype\|<html'; then
+    has_html_marker=1
+  fi
+
+  if [ "$starts_with_at" -ne 1 ] || [ "$has_doi_field" -ne 1 ] || [ "$has_html_marker" -ne 0 ]; then
+    is_valid=0
   fi
 
   if [ "$is_valid" -ne 1 ]; then

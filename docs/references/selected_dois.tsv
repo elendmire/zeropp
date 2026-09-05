@@ -84,3 +84,16 @@ B10	chen_2022_generative_multivariate	10.1214/23-aoas1784	Chen 2022 - generative
 B10	lakatos_2025_gnn_composite	10.1002/qj.70119	Lakatos 2025 - composite-loss GNN multivariate postprocessing	MED
 B10	schefzik_2013_ecc	10.1214/13-sts443	Schefzik 2013 - ensemble copula coupling	MED
 B10	wilks_2015_empirical_copulas	10.1002/qj.2414	Wilks 2015 - multivariate EMOS with empirical copulas	LOW
+B6	sun_2026_streamflow_zeroshot	10.1088/3049-4753/ae4982	Sun 2026 - zero-shot streamflow forecasting with TSFMs, are we there yet	CORE
+B6	bharadwaj_2026_air_quality_arena	10.48550/arxiv.2607.19381	Bharadwaj 2026 - Air Quality Arena, multi-region TSFM benchmark	CORE
+B6	huang_2026_wildfire_pm25	10.48550/arxiv.2607.07951	Huang 2026 - wildfire PM2.5 generalizability, TSFMs vs trained BiLSTM	CORE
+B6	rollo_2026_particulate_foundation	10.1016/j.eswa.2026.133099	Rollo 2026 - foundation models for particulate matter prediction	HIGH
+B6	gao_2026_zero_inflation_wrapper	10.1145/3774904.3792998	Gao 2026 - training-free zero-inflation correction wrapper for TSFMs	HIGH
+B6	liu_2025_rnn_to_transformer_hydro	10.5194/hess-29-6811-2025	Liu 2025 - RNNs to transformers, hydrologic prediction benchmark	MED
+B1	vannitsem_2020_postprocessing_review	10.1175/bams-d-19-0308.1	Vannitsem 2021 - statistical postprocessing review (BAMS, online 2020)	CORE
+B2	muschinski_2023_mos_random_forests	10.5194/npg-30-503-2023	Muschinski 2023 - MOS random forests, small-N rival	CORE
+B8	hamill_2001_rank_histograms	10.1175/1520-0493(2001)129<0550:iorhfv>2.0.co;2	Hamill 2001 - rank histogram interpretation (DOI resolved via Crossref 2026-09-05)	CORE
+B8	dirkson_2025_misdiagnosing_reliability	10.1002/qj.70186	Dirkson 2026 - misdiagnosing ensemble reliability (QJRMS, published 2026)	CORE
+B8	broecker_2018_serial_dependence	10.1002/qj.3379	Brocker 2018 - reliability under serial dependence	HIGH
+B8	broecker_2020_stratified_rank	10.1002/qj.3778	Brocker 2020 - stratified rank histograms under serial dependence	MED
+B8b	diebold_1995_comparing_accuracy	10.1080/07350015.1995.10524599	Diebold & Mariano 1995 - the original test (JBES, not the 1994 NBER working paper)	CORE
