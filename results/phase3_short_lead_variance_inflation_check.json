@@ -1,0 +1,23 @@
+{
+  "model_version": "phase3-lead-analysis-v1",
+  "config": {
+    "lead_time_bucket": "0-24h",
+    "quantile_levels": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9
+    ],
+    "lambda_clim": 1.5
+  },
+  "config_hash": "9c5d93923441e193",
+  "git_sha": "e3ff640a7e5ed1db961f93bf0eefee094cf837e4",
+  "git_dirty": true,
+  "source_tree_sha256": "6a828e38d2f7bbf975393c951afd83930e243f4b94eda609ef3c3ebda855f3fa",
+  "written_at": "2026-09-04T09:18:27.316867+00:00"
+}

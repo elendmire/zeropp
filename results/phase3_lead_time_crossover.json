@@ -1,0 +1,11 @@
+{
+  "model_version": "phase3-lead-analysis-v1",
+  "config": {
+    "source": "results/phase3_lead_time_breakdown.parquet"
+  },
+  "config_hash": "fd0a18a3b05d80c8",
+  "git_sha": "e3ff640a7e5ed1db961f93bf0eefee094cf837e4",
+  "git_dirty": true,
+  "source_tree_sha256": "6a828e38d2f7bbf975393c951afd83930e243f4b94eda609ef3c3ebda855f3fa",
+  "written_at": "2026-09-04T09:07:28.672261+00:00"
+}

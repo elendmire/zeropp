@@ -2,9 +2,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-results/*.parquet
-results/*.json
 figures/*.png
-!results/.gitkeep
 !figures/.gitkeep
 .DS_Store
