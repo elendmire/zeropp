@@ -112,6 +112,25 @@ class VarianceInflationBaseline(Postprocessor):
             "than trusting brentq outside a checked range."
         )
 
+        # NOTE (Investigation 2, docs/references/priority123_investigation_report.md,
+        # verified 2026-09-07 on altay): this brentq solve converges essentially
+        # exactly on `train_df` -- independently re-run for target_coverage=0.760328
+        # (TimesFM-3's real coverage), it returns lambda_c=2.706424, and re-computing
+        # coverage@[0.1,0.9] on `train_df` at that lambda gives 0.7603282 (matching
+        # the target to ~1e-7). The persisted TEST-set coverage for this exact
+        # lambda_c (results/phase3_data_size_sweep.parquet,
+        # var_inflation_coverage_matched, 0.822103) is NOT a root-finding miss --
+        # it is the expected consequence of calibrating lambda on the training
+        # reforecast archive (11 ensemble members) and applying it, unchanged, to a
+        # structurally different test forecast archive (51 members) -- exactly the
+        # train/test ensemble-size mismatch scripts/07_data_size_sweep.py's module
+        # docstring already documents ("ens_var computed from 11 members is a
+        # noisier... estimator... than one from 51 would be"). No amount of
+        # root-finding precision can close a gap caused by evaluating a
+        # train-calibrated constant on a differently-distributed test set; brentq
+        # already converges to the tightest defensible answer to the question this
+        # baseline actually asks ("what lambda hits the target on the archive we are
+        # allowed to look at").
         lam_c = brentq(lambda lam: coverage_at(lam) - target_coverage, lam_lo, lam_hi, xtol=1e-6)
 
         instance = cls(quantile_levels)
