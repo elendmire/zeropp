@@ -229,3 +229,284 @@ clipped the canvas edges — settled on `ncol=2`, 4 legend rows, which fits
   committed alongside this work since `make_figures.py` implements it
   directly)
 - `docs/figures_implementation_report.md` (this file)
+
+---
+
+# Fix round 1 (2026-09-06)
+
+Three BLOCKING findings and five corrections raised in review of the F1-F5 set
+above. Sync-then-test throughout: all code edited locally, rsync'd to `altay`,
+all compute and figure rendering run there over SSH inside `.venv`, one
+background job at a time, results/figures rsync'd back and every changed PNG
+re-viewed with the Read tool before being accepted (not just "ran without
+error" -- several rounds of real layout bugs were caught exactly this way, see
+below). No push to GitHub; commits are local only per this round's mandate.
+
+## Blocking Fix 1 -- F5 re-computed on the same extended grid F1 uses
+
+`scripts/08_lead_time_grouped_analysis.py`'s E5b block previously fit
+pooled/local EMOS per lead-time bucket only at the main sweep's k=9,26,105,314,
+4180 -- coarser than F1's k=1,2,3,5,7,9,26,105,314,4180 (which folds in
+`results/phase3_low_n_grid.parquet`). Extended E5b (new block right after the
+existing per-bucket loop) to also fit at every `LOW_N_K_GRID` value
+(k=1,2,3,5,7), reusing `n_days_for_exact_k`/`sample_contiguous`/
+`fit_predict_pooled_emos`/`fit_predict_local_emos` verbatim from
+`scripts/07_data_size_sweep.py` (same import mechanism this script already
+uses for everything else), filtered to each bucket via the SAME
+`lead_buckets_matched`/`covered_mask` instance-set-join machinery the existing
+loop uses -- no reimplementation. Both `results/phase3_lead_time_bucketed_sweep.parquet`
+and `results/phase3_lead_time_bucketed_breakpoints.parquet` now cover the
+union grid (contiguous arm only, matching E5b's pre-existing scope -- no
+random arm exists anywhere in E5b). `docs/results_index.md` updated to drop
+the now-stale "not tested below k=9" caveats for both files.
+
+Ran on `altay` (~2 min, 5 extra k values x 3 buckets x {pooled,local}, cheap
+EMOS fits). No errors; full test suite (157 tests) still passes.
+
+## Blocking Fix 2 -- two distinct "no crossing" situations, two distinct markers
+
+Added `_classify_no_crossing(reason)` in `make_figures.py`: reads the
+`crossing_direction` string already written by `breakpoint_and_direction`
+(`scripts/07_data_size_sweep.py`, unchanged) and returns `"already_better"`
+(text contains "already") or `"true_no_crossing"`. F5 now renders these as:
+- **already better at smallest tested N**: filled star (`STYLE["marker"]["already_better_at_min_n"]`),
+  placed at the LEFT edge (k_min), labelled "already better (at k=...)".
+- **no crossing, worse throughout**: open circle (unchanged shape, kept
+  deliberately since it correctly means "still hasn't happened by the largest
+  N tested"), placed at the RIGHT edge (k_max), labelled with the tested k
+  range.
+
+Legend now has two separate, accurately-worded entries instead of one
+ambiguous "No crossing observed" line.
+
+**Re-verified against the Fix-1-recomputed data, as instructed -- the picture
+is more nuanced than the blocking-fix brief's own working assumption, and I am
+reporting exactly what came out, not what was assumed going in.** Of 12
+(lead-group x metric x variant) breakpoint rows, 3 are still "no crossing"
+after the extended grid, but they split as:
+- **0-24h, CRPS, EMOS pooled: a TRUE "no crossing, worse throughout" (open
+  circle)** -- TimesFM-3's CRPS beats EMOS pooled at every tested k from 1 to
+  4180 in the nowcasting bucket. This is the OPPOSITE of "already better" and
+  is, if anything, a STRONGER version of the paper's nowcasting-regime claim
+  than before the fix (it now holds all the way down to k=1, not just k=9).
+- **72-120h, CRPS, EMOS pooled AND EMOS local: "already better at k=1" (filled
+  star)** -- at long lead, EMOS already beats TimesFM-3's CRPS at the smallest
+  tested N; matches the blocking-fix brief's description, but only for this
+  bucket.
+- **24-72h, CRPS**: on the OLD grid this bucket's breakpoint was computed only
+  from k=9 upward; on the extended grid both pooled (k=2.31) and local
+  (k=1.98) resolve to REAL, very-low-N breakpoints -- no longer a "no
+  crossing" case at all.
+- All 6 `coverage_80pct` rows resolve to real breakpoints on both grids (no
+  ambiguity there).
+
+So the true situation is bucket-dependent: TimesFM-3 has a genuine, full-range
+CRPS advantage only in the 0-24h (nowcasting) bucket; at 72-120h EMOS is ahead
+from the very first tested case; at 24-72h EMOS overtakes almost immediately
+(k~2). Conflating all three under one "no crossing, right-edge, open circle"
+rendering (the pre-fix behaviour) would have been actively misleading for the
+72-120h rows specifically -- exactly the failure mode Blocking Fix 2 flagged.
+
+## Blocking Fix 3 -- coverage-matched variance-inflation baseline (variant c)
+
+**Implementation.** Added `VarianceInflationBaseline.from_coverage_target(target_coverage,
+train_df, quantile_levels, lower=0.1, upper=0.9, bracket=(0.1,10.0))` to
+`src/zeropp/models/variance_inflation.py`: root-finds (via
+`scipy.optimize.brentq`) the multiplier lambda such that scaling the raw
+ensemble spread by lambda and checking coverage@[0.1,0.9] against `train_df`'s
+own observations hits `target_coverage` -- computed and checked ONLY on
+`train_df`, never on test data (the same leakage discipline `fit()` already
+uses). The bracket precondition (`coverage(0.1) < target < coverage(10.0)`) is
+asserted before calling `brentq`, which is also the monotonicity sanity check
+the task asked for; it held on this data (no AssertionError raised in the real
+run). Returned instance is permanently fixed (`._fixed = True`, same guard as
+`from_fixed_multiplier` -- verified by a new test that `.fit()` on it is a
+no-op). Six new tests added to `tests/test_variance_inflation.py`, including
+one that recovers a KNOWN synthetic multiplier from its own true empirical
+coverage, one for the fixed-after-construction guard, and one that a
+target_coverage outside any reachable range raises `AssertionError` (fails
+loudly, not silently). Full suite: 157/157 pass.
+
+**Training-data choice (stated per the brief's instruction to state
+reasoning).** Calibrated on the FULL training reforecast archive (`full_train`,
+every (year_idx, time_idx) pair), NOT the k=9 subset variant (a)
+(`var_inflation_trainfit`) uses at its own k=9 point. Reasoning: this baseline
+is meant to answer "is TimesFM-3's full-data test calibration achievable by a
+trivial rescaling," and `scripts/08_lead_time_grouped_analysis.py` already
+established a precedent for exactly this kind of full-archive variance-
+inflation baseline (`var_inflation_trainfit_full`, used there for the width-
+distribution and short-lead checks) -- kept consistent with that existing
+convention rather than inventing a third training-subset rule.
+
+**Persisted** as `method="var_inflation_coverage_matched"`,
+`sampling_arm="n_independent"`, in `results/phase3_data_size_sweep.parquet`
+(same file `var_inflation_trainfit`/`var_inflation_fixed` already live in), via
+`write_result`, alongside the existing two variants.
+
+**The real number, and what it means.** `target_coverage` was read from the
+already-persisted N-independent tsfm3 row (`phase3_data_size_sweep.parquet`),
+not hardcoded: **0.76032821502584**. The train-calibrated multiplier is
+**lambda_c = 2.7064**. Applying it unchanged to the TEST set gives:
+
+| | coverage@80% | interval width K |
+|---|---|---|
+| TimesFM-3 (real, test) | 0.7603 | 5.138 K |
+| Coverage-matched var.-inflation (lambda_c=2.7064, test) | **0.8221** | **6.722 K** |
+
+**Answer to the headline question: the coverage-matched baseline's interval
+width (6.722 K) is WIDER than TimesFM-3's (5.138 K)** -- not narrower, not
+equal.
+
+**A genuinely important, disclosed wrinkle, not glossed over:** the achieved
+TEST coverage (0.8221) does not exactly equal the 0.7603 target -- because,
+per the non-negotiable leakage rule, lambda_c was calibrated to hit 0.7603 on
+TRAINING coverage, not test coverage, and train/test coverage need not agree
+under one fixed lambda when the two periods' ensemble-spread-vs-error
+relationship differs (real distribution shift between the reforecast archive
+and the test forecast period). This makes the finding, if anything, MORE
+decisive against "trivial rescaling achieves TimesFM-3's calibration": this
+baseline needs a WIDER interval (6.722 K) than TimesFM-3 while simultaneously
+OVERSHOOTING TimesFM-3's coverage (0.8221 vs 0.7603, i.e. it is less sharp at
+a MORE conservative coverage level, the wrong direction on both axes of the
+Gneiting sharpness-subject-to-calibration principle). TimesFM-3 achieves both
+a lower (closer-to-nominal, since nominal is 0.80 and TimesFM-3 undershoots
+it while this baseline overshoots it) coverage AND a meaningfully narrower
+interval than a leakage-free one-parameter rescaling of the raw ensemble can
+manage. **TimesFM-3's calibration is not trivially reproducible by rescaling
+alone.**
+
+**Added to F1 and F3.** The style guide's palette has exactly one
+"Variance-inflated baseline" hex (`#E69F00`). With three variants now
+required, all three keep that SAME orange hue (no invented color) and are
+distinguished by linestyle/marker/opacity, documented in `STYLE`:
+- (b) fixed λ=1.5: dashdot, flat line (unchanged from before).
+- (c) coverage-matched: dotted, flat line (new).
+- (a) CRPS-optimal trainfit: solid, marker "P" (filled plus), alpha 0.65,
+  rendered as a CURVE across N (new to F1/F3 -- previously omitted entirely
+  because the palette had no distinct entry for it; now it does). Reduced
+  opacity keeps it visually grouped with its own family rather than competing
+  with the paper's two protagonist colors (blue/vermillion).
+F3's zero-shot point markers also needed a second marker shape
+(`zero_shot_point_coverage_matched`, pentagon) since (b) and (c) are both
+orange diamonds otherwise indistinguishable as points. F3's caption/F1's
+caption both state the matched-coverage width comparison using the real
+numbers above.
+
+## Corrections
+
+**D1 (F1 layout gap + CRPS/TimesFM-3 coincidence note).** The panel-3-to-
+calendar-axis gap is fixed: tightened `subplots_adjust`/secondary-axis offset
+so the calendar-day row sits immediately below panel 3 (verified by
+`get_position()`/`get_window_extent()` introspection on `altay`, not just
+eyeballing a downscaled preview -- a first attempt only shrank the OLD gap
+location and opened an equally large new one between the calendar axis and
+the legend; caught by that introspection and fixed with a real bbox
+computation, not a second guess). CRPS-coincidence note added, auto-detected
+(`round(raw_crps,3) == round(tsfm3_crps,3)`, not hardcoded) and placed
+top-right of the CRPS panel (inside the headroom reserved for R2 annotations,
+below the R2 stack) after a first placement (bottom-right) turned out to
+overlap the DRN/EMOS-local curves at k~10-30 -- also caught by rendering and
+reading the actual PNG, not assumed correct from the code.
+
+**D2 (F2 legend split + "durable" definition + oscillation).** Legend now has
+separate entries for the durable-crossover vertical line and the nominal-80%
+horizontal line (previously one entry, "Durable crossover / nominal 80%",
+covering two different lines). Panel annotation and the auto-generated
+caption both now spell out, verbatim, what "durable" means operationally:
+"TimesFM-3's CRPS exceeds EMOS pooled's at every one of the remaining tested
+lead times after this point, despite lead-to-lead oscillation." **Chose to
+add** a thin, translucent 3-point rolling-mean overlay on the CRPS panel
+(EMOS pooled and TimesFM-3 only), clearly labelled "smoothing aid only" in
+both the legend and the caption, with the real per-lead-time markers/lines
+left completely unchanged underneath -- this was the brief's own suggested
+option ("if you think ... would genuinely help ... you may add it") and, once
+rendered, it visibly helps a reader see the trend through the ~6h oscillation
+without erasing the oscillation itself from the figure. No underlying data
+was smoothed or altered.
+
+**D3 (F4 tick-label collisions + n= vs. PIT-value-label collision).** Fixed
+in two rounds (both verified by cropping the actual full-resolution PNG and
+reading the crop, after the first full-figure preview turned out to be
+misleading at reduced size):
+1. Reduced each panel's x-ticks to `[0, 0.5, 1.0]` (from the default 5) and
+   widened `wspace` -- eliminated the "1.000.00" boundary collision between
+   adjacent panels.
+2. The n=/PIT-value-label fix went through two attempts: the first render
+   (moving `fig.supxlabel` down to y=0.05, tightening the n= annotation
+   offset) accidentally put `fig.supxlabel` almost exactly on top of the
+   legend anchor (both near y~0.0-0.05) -- a NEW collision, caught by cropping
+   the actual bottom strip of the rendered PNG, not by inspecting the code.
+   Fixed by moving `fig.supxlabel` to y=0.10, restoring real separation from
+   both the n= annotations above it and the legend below it. Final PNG
+   crop-checked clean.
+
+**D4 (F3 missing starting-N label).** Every trajectory (EMOS pooled, EMOS
+local, DRN, and the newly-added variance-inflation trainfit) now gets a
+second `N=...` label at its low-width (smallest tested N) end, in addition to
+the existing high-N arrowhead label, each with its own per-method offset
+chosen to avoid colliding with the other labels clustered in that region of
+the plane (real crowding exists there since several methods' low-N points sit
+close together -- inherent to the data, not a layout defect; every label is
+legible and correctly colour-matched to its series).
+
+**D5 (delete the stale `figures/data_size_sweep.png`).** Deleted, AND the
+matplotlib code in `scripts/07_data_size_sweep.py`'s `main()` that generated
+it was removed entirely (not just the file) -- leaving that code in place
+would have silently regenerated and re-added the exact file the review
+flagged on the next run of that script, which is exactly what happened during
+this fix round's own re-run had the code been left in. Verified the file is
+absent both locally and on `altay` after a fresh full re-run of
+`07_data_size_sweep.py`.
+
+## What was NOT changed
+
+Per "what's already good, do not regress": R2's colour-matched in-panel
+annotation pattern, F4's raw-ensemble U-shape panel content, and the
+Okabi-Ito palette's fixed hex values are all untouched. The only palette-level
+change is the ADDITION of the two new variance-inflation labels/linestyles
+under the SAME existing `#E69F00` hex -- no new color was introduced anywhere
+(mechanically re-verified: `grep`-based hex-outside-STYLE check still finds 0
+matches).
+
+## Verification performed
+
+- `python3 -m py_compile` clean on all four touched/added Python files.
+- Full test suite on `altay`: **157/157 pass** (34 in the directly-touched
+  test files, including 6 new tests for `from_coverage_target`).
+- `phase3_data_size_sweep.py` and `08_lead_time_grouped_analysis.py` both run
+  end-to-end on `altay` with no errors/tracebacks (grepped the full run logs).
+- Every one of the 5 regenerated figures' PNGs was fetched via rsync and
+  inspected with the Read tool AFTER the code fixes -- not just "the script
+  exited 0" -- across multiple iterations for F1, F3, F4, F5 specifically
+  (each had at least one real, visually-caught bug fixed and re-verified
+  before being accepted; see D1/D3 above for the two cases that needed a
+  second round). F2 required no iteration.
+- Mechanical checks re-run: 0 hex-color literals outside `STYLE`; PDF
+  metadata (`/Subject`, `/Keywords`) present on all 5 PDFs with the correct
+  source-parquet paths.
+- `figures/data_size_sweep.png` confirmed absent, on both this Mac and
+  `altay`, after a fresh full re-run of `07_data_size_sweep.py`.
+
+## Files touched, fix round 1
+
+- `src/zeropp/models/variance_inflation.py` (`from_coverage_target` added)
+- `tests/test_variance_inflation.py` (6 new tests)
+- `scripts/07_data_size_sweep.py` (coverage-matched variant c added and
+  persisted; legacy `figures/data_size_sweep.png`-generating code removed)
+- `scripts/08_lead_time_grouped_analysis.py` (E5b extended to the low-N grid,
+  per bucket)
+- `scripts/make_figures.py` (all five Blocking Fix 1-3 / D1-D5 changes)
+- `docs/results_index.md` (two stale rows + the bucketed-breakpoint rule of
+  thumb updated to reflect the now-extended grid)
+- `results/phase3_data_size_sweep*.parquet`+`.json`,
+  `results/phase3_low_n_grid*.parquet`+`.json`,
+  `results/phase3_lead_time_bucketed_sweep.parquet`+`.json`,
+  `results/phase3_lead_time_bucketed_breakpoints.parquet`+`.json`,
+  `results/phase3_lead_time_crossover.parquet`+`.json`,
+  `results/phase3_lead_time_grouped_emos.parquet`+`.json`,
+  `results/phase3_short_lead_variance_inflation_check.parquet`+`.json`,
+  `results/phase3_width_distribution.parquet`+`.json` (all regenerated)
+- `figures/f1_breakpoint_curve.{pdf,svg,png}` .. `f5_breakpoint_by_lead_group.{pdf,svg,png}`
+  (regenerated), `figures/captions.md` (regenerated)
+- `figures/data_size_sweep.png` (deleted)
+- `docs/figures_implementation_report.md` (this section)

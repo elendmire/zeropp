@@ -43,6 +43,24 @@ baseline lives in scripts/07_data_size_sweep.py): compares the WIDTH DISTRIBUTIO
 (mean/std/p10/p50/p90, not just the mean) of TimesFM-3 against both
 variance-inflation baseline variants and the full-data pooled EMOS fit, overall
 and within each lead-time bucket.
+
+Fix round 1 (Blocking Fix 1, 2026-09-06): E5b's contiguous-arm k axis previously
+stopped at k=9 (n_days=30), the main sweep's smallest tested point -- but
+scripts/make_figures.py's F1 (cover figure) plots emos_pooled/emos_local on the
+EXTENDED grid k=1,2,3,5,7,9,26,105,314,4180 (folding in
+results/phase3_low_n_grid.parquet, per docs/results_index.md). F5
+(this script's phase3_lead_time_bucketed_breakpoints.parquet) showing "no
+crossing" breakpoints computed only on the coarser k=9..4180 grid, for the same
+kind of EMOS-vs-TimesFM-3 claim F1 makes on the finer grid, is exactly the
+contradiction docs/results_index.md warns about for the pooled (non-bucketed)
+case -- so it is fixed here the same way: E5b now ALSO fits pooled/local EMOS at
+every LOW_N_K_GRID value (k=1,2,3,5,7), per lead-time bucket, using the identical
+n_days_for_exact_k(k)-driven pattern and instance-set-join machinery
+(lead_buckets_matched, covered_mask) the main E5b loop already established --
+see the "Fix-round-1 Blocking Fix 1" block right after that loop. Both
+phase3_lead_time_bucketed_sweep.parquet and phase3_lead_time_bucketed_breakpoints.parquet
+now cover k=1..4180 (contiguous arm only, matching E5b's pre-existing scope --
+no random arm exists anywhere in E5b, unlike 07's main sweep/E3 blocks).
 """
 import importlib.util
 from pathlib import Path
@@ -89,6 +107,13 @@ breakpoint_and_direction = _sweep.breakpoint_and_direction
 _catch_overflow_warnings = _sweep._catch_overflow_warnings
 k_and_calendar_days = _sweep.k_and_calendar_days
 LAMBDA_CLIM = _sweep.LAMBDA_CLIM
+# Fix-round-1 Blocking Fix 1: reuse 07's low-N grid machinery verbatim (same pattern
+# tests/test_data_size_sweep.py and this script already use for every other helper
+# imported from 07) so E5b's per-bucket breakpoints are computed on the SAME
+# extended k=1,2,3,5,7,9,26,105,314,4180 grid F1 (scripts/make_figures.py) uses --
+# see this script's module docstring addendum below for the full rationale.
+LOW_N_K_GRID = _sweep.LOW_N_K_GRID
+n_days_for_exact_k = _sweep.n_days_for_exact_k
 
 # Task 6 E5b's lead-time buckets, per the brief's own example edges (0-24h,
 # 24-72h, 72-120h). Half-open except the last (closed at 120h, the archive's max
@@ -363,6 +388,69 @@ def main() -> None:
             })
         print(f"E5b: N={n_days} days (k={k}) bucketed pooled/local EMOS computed for all {len(LEAD_TIME_BUCKETS)} buckets")
 
+    # ============ Fix-round-1 Blocking Fix 1: extend E5b to the low-N grid =============
+    # F1 (scripts/make_figures.py) plots emos_pooled/emos_local on the EXTENDED grid
+    # k=1,2,3,5,7,9,26,105,314,4180 (main sweep k=9..4180 UNION scripts/07_data_size_sweep.py's
+    # E3 low-N grid, results/phase3_low_n_grid.parquet) -- F5 must show breakpoints
+    # computed on that SAME grid, or the two figures contradict each other about what
+    # "N" means for the same underlying claim. This block reuses the exact
+    # n_days_for_exact_k(k)-driven pattern 07's own E3 block uses (see that script's
+    # module docstring and n_days_for_exact_k's docstring for why k drives this
+    # directly instead of a human-friendly n_days label), applied per lead-time
+    # bucket via the SAME instance-set-join discipline (lead_buckets_matched,
+    # covered_mask) the main E5b loop above already established -- no reimplementation,
+    # only an additional k axis folded into the identical bucket-filtering logic.
+    # Contiguous arm only, matching E5b's own scope (no random arm exists anywhere in
+    # E5b, unlike 07's main sweep/E3 blocks) -- see this script's report addendum.
+    for k_low in LOW_N_K_GRID:
+        synthetic_n_days = n_days_for_exact_k(k_low)
+        n_calendar_low = k_and_calendar_days(synthetic_n_days, n_pairs_full)[1]
+
+        train_contig_low = sample_contiguous(full_train_lead, synthetic_n_days)
+        actual_k = len(train_contig_low[["year_idx", "time_idx"]].drop_duplicates())
+        assert actual_k == k_low, f"n_days_for_exact_k round-trip failed: wanted k={k_low}, got {actual_k}"
+
+        pooled_preds_low, n_overflow_pooled_low = _catch_overflow_warnings(
+            fit_predict_pooled_emos, train_contig_low, quantile_levels, test_X
+        )
+        (local_preds_low, covered_mask_low, _), n_overflow_local_low = _catch_overflow_warnings(
+            fit_predict_local_emos, train_contig_low, test_station_ids, test_X, quantile_levels
+        )
+        if n_overflow_pooled_low or n_overflow_local_low:
+            print(
+                f"E5b low-N grid: k={k_low}: {n_overflow_pooled_low} pooled + {n_overflow_local_low} local "
+                "'overflow encountered in exp' RuntimeWarning(s) during EMOS optimization."
+            )
+
+        for low, high, label in LEAD_TIME_BUCKETS:
+            bucket_mask = lead_buckets_matched == label
+
+            pooled_bucket_metrics_low = compute_metrics(
+                obs_values[bucket_mask], pooled_preds_low[bucket_mask], quantile_levels
+            )
+            e5b_rows.append({
+                "n_days": f"k={k_low}", "n_cases": k_low, "n_calendar_days_equiv": n_calendar_low,
+                "sampling_arm": "contiguous", "lead_time_bucket": label, "method": "emos_pooled",
+                **pooled_bucket_metrics_low, "n_stations_covered": None,
+            })
+
+            local_bucket_mask_low = bucket_mask & covered_mask_low
+            n_stations_covered_bucket_low = (
+                len(np.unique(test_station_ids[local_bucket_mask_low])) if local_bucket_mask_low.any() else 0
+            )
+            if local_bucket_mask_low.any():
+                local_bucket_metrics_low = compute_metrics(
+                    obs_values[local_bucket_mask_low], local_preds_low[local_bucket_mask_low], quantile_levels
+                )
+            else:
+                local_bucket_metrics_low = {"crps": float("nan"), "coverage_80pct": float("nan"), "interval_width_k": float("nan")}
+            e5b_rows.append({
+                "n_days": f"k={k_low}", "n_cases": k_low, "n_calendar_days_equiv": n_calendar_low,
+                "sampling_arm": "contiguous", "lead_time_bucket": label, "method": "emos_local",
+                **local_bucket_metrics_low, "n_stations_covered": n_stations_covered_bucket_low,
+            })
+        print(f"E5b low-N grid: k={k_low} (~{n_calendar_low} days) bucketed pooled/local EMOS computed for all {len(LEAD_TIME_BUCKETS)} buckets")
+
     # N-independent bucketed reference rows (raw_ensemble, tsfm3, and -- final-
     # review fix, item 1 -- both variance-inflation variants. These were already
     # computed above for the E1 width-distribution section but never added to
@@ -431,10 +519,14 @@ def main() -> None:
     write_result(
         e5b_df,
         name="phase3_lead_time_bucketed_sweep",
-        model_version="phase3-lead-analysis-v1",
+        model_version="phase3-lead-analysis-v2",
         config={
             "lead_time_buckets": LEAD_TIME_BUCKETS, "data_size_days": data_size_days,
             "quantile_levels": quantile_levels,
+            # Fix-round-1 Blocking Fix 1: the contiguous-arm n_cases axis is now the
+            # UNION of the main sweep's k (from data_size_days) and low_n_k_grid --
+            # matches the extended grid scripts/make_figures.py's F1 already plots.
+            "low_n_k_grid": LOW_N_K_GRID,
         },
     )
 
@@ -468,8 +560,15 @@ def main() -> None:
     write_result(
         bp_df,
         name="phase3_lead_time_bucketed_breakpoints",
-        model_version="phase3-lead-analysis-v1",
-        config={"lead_time_buckets": LEAD_TIME_BUCKETS, "data_size_days": data_size_days},
+        model_version="phase3-lead-analysis-v2",
+        config={
+            "lead_time_buckets": LEAD_TIME_BUCKETS, "data_size_days": data_size_days,
+            # Fix-round-1 Blocking Fix 1: breakpoints are now computed over the
+            # extended grid (main sweep k UNION low_n_k_grid), same grid as
+            # scripts/make_figures.py's F1 -- see phase3_lead_time_bucketed_sweep's
+            # config note above.
+            "low_n_k_grid": LOW_N_K_GRID,
+        },
     )
 
     # ================= E1 (lead-time-level part): width DISTRIBUTION comparison =================

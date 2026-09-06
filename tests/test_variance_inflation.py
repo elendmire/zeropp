@@ -99,6 +99,66 @@ def test_fit_on_a_fixed_multiplier_instance_is_a_noop(synthetic_train_df):
     assert fitted is model
 
 
+def test_from_coverage_target_recovers_a_multiplier_that_hits_the_target_on_train():
+    # Fix-round-1 Blocking Fix 3: synthetic archive with a KNOWN true multiplier (2.0,
+    # same generating process as synthetic_train_df above) -- the coverage-matched
+    # multiplier for the TRUE empirical coverage@[0.1,0.9] of this exact archive must
+    # recover a lambda close to 2.0 (not exactly, since target_coverage is read back
+    # from a finite empirical sample, not the population value).
+    rng = np.random.default_rng(2)
+    n = 20000
+    true_multiplier = 2.0
+    ens_mean = rng.normal(280.0, 5.0, size=n)
+    ens_var = rng.uniform(0.5, 3.0, size=n)
+    t2m_obs = ens_mean + rng.normal(0, true_multiplier * np.sqrt(ens_var))
+    train = pd.DataFrame({"station_id": 1, "ens_mean": ens_mean, "ens_var": ens_var, "t2m_obs": t2m_obs})
+
+    # The archive's own true multiplier gives a known target coverage for [0.1, 0.9]
+    # (the theoretical 80% central interval of a correctly-scaled Gaussian).
+    target_coverage = 0.80
+    model = VarianceInflationBaseline.from_coverage_target(
+        target_coverage=target_coverage, train_df=train, quantile_levels=QUANTILE_LEVELS
+    )
+    assert model.multiplier == pytest.approx(true_multiplier, rel=0.1)
+
+    # Re-checking coverage@[0.1,0.9] ON THE SAME TRAIN SET with the returned
+    # multiplier must land very close to target_coverage (that is the definition of
+    # the root-find) -- verified independently of VarianceInflationBaseline's own
+    # internals, via predict_quantiles + a direct coverage count.
+    preds = model.predict_quantiles({"ens_mean": ens_mean.reshape(-1, 1), "ens_var": ens_var.reshape(-1, 1)})
+    lo_idx, hi_idx = QUANTILE_LEVELS.index(0.1), QUANTILE_LEVELS.index(0.9)
+    achieved_coverage = float(np.mean(
+        (t2m_obs >= preds[:, 0, lo_idx]) & (t2m_obs <= preds[:, 0, hi_idx])
+    ))
+    assert achieved_coverage == pytest.approx(target_coverage, abs=0.02)
+
+
+def test_from_coverage_target_is_permanently_fixed_like_from_fixed_multiplier(synthetic_train_df):
+    model = VarianceInflationBaseline.from_coverage_target(
+        target_coverage=0.80, train_df=synthetic_train_df, quantile_levels=QUANTILE_LEVELS
+    )
+    lam_before = model.multiplier
+    fitted = model.fit(synthetic_train_df)
+    assert fitted is model
+    assert fitted.multiplier == pytest.approx(lam_before)
+
+
+def test_from_coverage_target_rejects_an_unreachable_target():
+    # target_coverage=1.5 is outside [0, 1] and can never be bracketed by any lambda
+    # in a sensible range -- must fail loudly (assertion), not silently return a
+    # meaningless root.
+    rng = np.random.default_rng(3)
+    n = 500
+    ens_mean = rng.normal(280.0, 5.0, size=n)
+    ens_var = rng.uniform(0.5, 3.0, size=n)
+    t2m_obs = ens_mean + rng.normal(0, np.sqrt(ens_var))
+    train = pd.DataFrame({"station_id": 1, "ens_mean": ens_mean, "ens_var": ens_var, "t2m_obs": t2m_obs})
+    with pytest.raises(AssertionError, match="bracket"):
+        VarianceInflationBaseline.from_coverage_target(
+            target_coverage=1.5, train_df=train, quantile_levels=QUANTILE_LEVELS
+        )
+
+
 def test_larger_multiplier_gives_wider_intervals():
     narrow = VarianceInflationBaseline.from_fixed_multiplier(1.0, quantile_levels=QUANTILE_LEVELS)
     wide = VarianceInflationBaseline.from_fixed_multiplier(2.0, quantile_levels=QUANTILE_LEVELS)

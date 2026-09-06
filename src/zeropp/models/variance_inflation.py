@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.optimize import brentq
 from scipy.stats import norm
 
 from zeropp.models.base import Postprocessor
@@ -50,6 +51,71 @@ class VarianceInflationBaseline(Postprocessor):
     def from_fixed_multiplier(cls, multiplier: float, quantile_levels: list[float]) -> "VarianceInflationBaseline":
         instance = cls(quantile_levels)
         instance.multiplier = float(multiplier)
+        instance._fixed = True
+        return instance
+
+    @classmethod
+    def from_coverage_target(
+        cls,
+        target_coverage: float,
+        train_df,
+        quantile_levels: list[float],
+        lower: float = 0.1,
+        upper: float = 0.9,
+        bracket: tuple[float, float] = (0.1, 10.0),
+    ) -> "VarianceInflationBaseline":
+        """Fix-round-1 Blocking Fix 3, variant (c): find the multiplier lambda_c such
+        that the raw ensemble's spread, scaled by lambda_c, achieves `target_coverage`
+        empirical coverage@[lower, upper] -- evaluated ONLY on `train_df` (the training
+        reforecast archive) against its own observations. This is deliberately the same
+        leakage discipline as fit(): the multiplier is derived without ever looking at
+        test-set coverage. Callers apply the returned (permanently fixed, like
+        from_fixed_multiplier) instance to the TEST set afterward, exactly like variants
+        (a) (`fit`) and (b) (`from_fixed_multiplier`) already do.
+
+        `target_coverage` is meant to be a real, persisted number (e.g. TimesFM-3's
+        measured coverage_80pct at [0.1, 0.9]) read from a results file by the caller,
+        never hardcoded here.
+
+        Coverage as a function of lambda is monotonically increasing (a wider interval
+        can only cover more, never less, for a fixed centre) -- bracketed root-finding
+        via `scipy.optimize.brentq` is used rather than a custom bisection loop, but the
+        monotonicity assumption is verified on THIS data before trusting the single
+        root: coverage at the bracket's low end must sit below target_coverage and
+        coverage at its high end above it (the classic brentq precondition), which for
+        a sensible bracket ([0.1, 10.0] lambda) also serves as the sanity check the task
+        asked for (coverage near 0 at lambda=0.1, near 1 at lambda=10 for any
+        reasonably-dispersed archive) -- an AssertionError here means the bracket itself
+        needs revisiting for this dataset, not that root-finding silently returned a
+        wrong answer.
+        """
+        obs = np.asarray(train_df["t2m_obs"], dtype=float)
+        ens_mean = np.asarray(train_df["ens_mean"], dtype=float)
+        ens_var = np.asarray(train_df["ens_var"], dtype=float)
+        sqrt_var = np.sqrt(ens_var)
+        z_lo = norm.ppf(lower)
+        z_hi = norm.ppf(upper)
+
+        def coverage_at(lam: float) -> float:
+            sigma = lam * sqrt_var
+            lo_bound = ens_mean + sigma * z_lo
+            hi_bound = ens_mean + sigma * z_hi
+            return float(np.mean((obs >= lo_bound) & (obs <= hi_bound)))
+
+        lam_lo, lam_hi = bracket
+        cov_lo, cov_hi = coverage_at(lam_lo), coverage_at(lam_hi)
+        assert cov_lo < target_coverage < cov_hi, (
+            f"from_coverage_target: bracket {bracket} does not contain target_coverage="
+            f"{target_coverage} (coverage(lambda={lam_lo})={cov_lo:.4f}, "
+            f"coverage(lambda={lam_hi})={cov_hi:.4f}) -- coverage-vs-lambda monotonicity "
+            "could not be verified with this bracket on this data; widen `bracket` rather "
+            "than trusting brentq outside a checked range."
+        )
+
+        lam_c = brentq(lambda lam: coverage_at(lam) - target_coverage, lam_lo, lam_hi, xtol=1e-6)
+
+        instance = cls(quantile_levels)
+        instance.multiplier = float(lam_c)
         instance._fixed = True
         return instance
 

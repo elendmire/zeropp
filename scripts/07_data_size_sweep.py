@@ -97,13 +97,9 @@ where nothing was actually fit at that row (N=0 undefined rows, the N=full rando
 arm reuse rows since no refit happens there by construction, and the N-independent
 raw_ensemble/tsfm3 reference rows, which are zero-shot/already-computed).
 """
-import os
 import time
 import warnings
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -760,11 +756,14 @@ def main() -> None:
     # --- N-independent reference lines: raw_ensemble, tsfm3, restricted to the same
     #     matched instance set as EMOS (fix-round-1 finding 1) ---
     quantile_cols = [f"q{q}" for q in quantile_levels]
+    tsfm3_ref_metrics = None  # captured for Fix-round-1 Blocking Fix 3's coverage target below
     for method in ["raw_ensemble", "tsfm3"]:
         df_method = raw[raw["method"] == method].merge(matched_keys[key_cols], on=key_cols, how="inner")
         qp = df_method[quantile_cols].to_numpy().reshape(-1, 1, len(quantile_levels))
         y = df_method["obs"].to_numpy().reshape(-1, 1)
         ref_metrics = compute_metrics(y, qp, quantile_levels)
+        if method == "tsfm3":
+            tsfm3_ref_metrics = ref_metrics
         for n_days in data_size_days:
             rows.append({
                 "n_days": str(n_days), "n_cases": None, "n_calendar_days_equiv": None,
@@ -774,6 +773,7 @@ def main() -> None:
                 "n_stations_covered": None, "fit_seconds": None,  # zero-shot/already-computed
             })
         print(f"method={method} (N-independent, {len(df_method)} matched instances): {ref_metrics}")
+    assert tsfm3_ref_metrics is not None, "tsfm3 reference metrics were not captured"
 
     # --- Task 6 E1(b): fixed-climatological-multiplier variance-inflation baseline.
     # Genuinely zero-shot -- no training data, no fit() call, matching TimesFM-3's
@@ -791,6 +791,49 @@ def main() -> None:
             "n_stations_covered": None, "fit_seconds": None,  # zero-shot, no fit at all
         })
     print(f"method=var_inflation_fixed (N-independent, multiplier={LAMBDA_CLIM}): {vi_fixed_metrics}")
+
+    # --- Fix-round-1 Blocking Fix 3: coverage-matched variance-inflation baseline
+    # (variant (c)). target_coverage is TimesFM-3's REAL, measured coverage@[0.1,0.9]
+    # captured just above (tsfm3_ref_metrics["coverage_80pct"]) -- never hardcoded.
+    # Calibrated on the FULL training reforecast archive (full_train, every (year_idx,
+    # time_idx) pair), not the k=9 subset variant (a) (var_inflation_trainfit) uses:
+    # this baseline is meant to be compared fairly against TimesFM-3's full-data test
+    # performance, and var_inflation_trainfit_full (scripts/08_lead_time_grouped_analysis.py)
+    # already established the "fit on the full archive" convention for exactly this
+    # kind of full-data variance-inflation comparison -- kept consistent with that
+    # precedent rather than picking a third, unrelated training-subset convention.
+    # No test-set coverage is EVER looked at while finding lambda_c (see
+    # VarianceInflationBaseline.from_coverage_target's docstring) -- only full_train's
+    # own t2m_obs/ens_mean/ens_var are used, exactly the same leakage discipline as
+    # variant (a)'s .fit(train_contig).
+    vi_covmatch_train = full_train[["ens_mean", "ens_var", "t2m_obs"]]
+    vi_covmatch_model = VarianceInflationBaseline.from_coverage_target(
+        target_coverage=float(tsfm3_ref_metrics["coverage_80pct"]),
+        train_df=vi_covmatch_train,
+        quantile_levels=quantile_levels,
+    )
+    vi_covmatch_preds = vi_covmatch_model.predict_quantiles({"ens_mean": test_X["ens_mean"], "ens_var": test_X["ens_var"]})
+    vi_covmatch_metrics = compute_metrics(obs_values, vi_covmatch_preds, quantile_levels)
+    for n_days in data_size_days:
+        rows.append({
+            "n_days": str(n_days), "n_cases": None, "n_calendar_days_equiv": None,
+            "sampling_arm": "n_independent", "seed": None, "method": "var_inflation_coverage_matched",
+            **vi_covmatch_metrics,
+            "crps_std": None, "coverage_80pct_std": None, "interval_width_k_std": None,
+            "n_stations_covered": None, "fit_seconds": None,  # zero-shot application; lambda_c fit on train only
+        })
+    print(
+        f"method=var_inflation_coverage_matched (N-independent, lambda_c={vi_covmatch_model.multiplier:.4f}, "
+        f"target_coverage={tsfm3_ref_metrics['coverage_80pct']:.4f} [tsfm3's real coverage], "
+        f"fit on full training archive): {vi_covmatch_metrics}"
+    )
+    print(
+        "Blocking Fix 3 headline: at matched coverage "
+        f"({vi_covmatch_metrics['coverage_80pct']:.4f} vs tsfm3's {tsfm3_ref_metrics['coverage_80pct']:.4f}), "
+        f"coverage-matched interval width={vi_covmatch_metrics['interval_width_k']:.4f}K vs. "
+        f"tsfm3's {tsfm3_ref_metrics['interval_width_k']:.4f}K "
+        f"({'NARROWER' if vi_covmatch_metrics['interval_width_k'] < tsfm3_ref_metrics['interval_width_k'] else 'WIDER'})."
+    )
 
     sweep_df = pd.DataFrame(rows)
 
@@ -1096,97 +1139,20 @@ def main() -> None:
         config={"low_n_k_grid": LOW_N_K_GRID, "quantile_levels": quantile_levels},
     )
 
-    # --- Figure (fix-round-1 finding 5) ---
-    # Previously plotted against a categorical n_days axis built only from the main
-    # sweep's data_size_days -- var_inflation_trainfit/var_inflation_fixed (Task 6
-    # E1) and the E3 low-N grid (k=1,2,3,5,7) were computed and persisted but never
-    # drawn. Switched to a shared, log-scale n_cases (case count) x-axis: it is the
-    # one quantity every series (main sweep's k=9..4180 AND the low-N grid's k=1..7,
-    # which has no n_days label of its own at all) actually shares, so both regions
-    # can appear as one continuous picture instead of two disconnected axes.
-    def _by_n_cases(df_subset, n_cases_col="n_cases"):
-        d = df_subset.copy()
-        d = d[d[n_cases_col] > 0]
-        return d.sort_values(n_cases_col)
-
-    pooled_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "emos_pooled")])
-    rand_mean = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "random_mean") & (sweep_df["method"] == "emos_pooled")])
-    local_contig = _by_n_cases(sweep_df[
-        (sweep_df["sampling_arm"] == "contiguous")
-        & (sweep_df["method"] == "emos_local")
-        & (sweep_df["n_stations_covered"].fillna(0) > 0)
-    ])
-    drn_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "drn")])
-    # New (Task 6 E1): variance-inflation trainfit curve, refit at every N like EMOS/DRN above.
-    vi_trainfit_contig = _by_n_cases(sweep_df[(sweep_df["sampling_arm"] == "contiguous") & (sweep_df["method"] == "var_inflation_trainfit")])
-
-    # New (Task 6 E3): low-N grid points, on the SAME n_cases axis via low_n_df's "k" column.
-    low_pooled_contig = _by_n_cases(low_n_df[(low_n_df["sampling_arm"] == "contiguous") & (low_n_df["method"] == "emos_pooled")], "k")
-    low_pooled_rand_mean = _by_n_cases(low_n_df[(low_n_df["sampling_arm"] == "random_mean") & (low_n_df["method"] == "emos_pooled")], "k")
-    low_local_contig = _by_n_cases(low_n_df[
-        (low_n_df["sampling_arm"] == "contiguous")
-        & (low_n_df["method"] == "emos_local")
-        & (low_n_df["n_stations_covered"].fillna(0) > 0)
-    ], "k")
-
-    raw_val_row = sweep_df[sweep_df["method"] == "raw_ensemble"]
-    tsfm3_val_row = sweep_df[sweep_df["method"] == "tsfm3"]
-    # New (Task 6 E1(b)): genuinely zero-shot fixed-multiplier variance-inflation reference.
-    vi_fixed_row = sweep_df[sweep_df["method"] == "var_inflation_fixed"]
-
-    fig, axes = plt.subplots(3, 1, figsize=(9, 13), sharex=True)
-    metrics = ["crps", "coverage_80pct", "interval_width_k"]
-    ylabels = ["CRPS", "Coverage @ 80% nominal", "Interval width (K)"]
-
-    for ax, metric, ylabel in zip(axes, metrics, ylabels):
-        std_col = f"{metric}_std"
-
-        ax.plot(pooled_contig["n_cases"], pooled_contig[metric], marker="o", linestyle="-", color="tab:blue", label="EMOS pooled (contiguous)")
-        ax.plot(
-            low_pooled_contig["k"], low_pooled_contig[metric], marker="o", linestyle="none",
-            markerfacecolor="none", markeredgecolor="tab:blue", markersize=9,
-            label="EMOS pooled (contiguous, E3 low-N grid k=1..7)",
-        )
-
-        ax.plot(rand_mean["n_cases"], rand_mean[metric], marker=None, linestyle="--", color="tab:blue", alpha=0.6, label="EMOS pooled (random, mean)")
-        ax.fill_between(
-            rand_mean["n_cases"], rand_mean[metric] - rand_mean[std_col], rand_mean[metric] + rand_mean[std_col],
-            alpha=0.15, color="tab:blue",
-        )
-        ax.errorbar(
-            low_pooled_rand_mean["k"], low_pooled_rand_mean[metric], yerr=low_pooled_rand_mean[std_col],
-            fmt="x", linestyle="none", color="tab:blue", alpha=0.6,
-            label="EMOS pooled (random, mean +/- std, E3 low-N grid)",
-        )
-
-        ax.plot(local_contig["n_cases"], local_contig[metric], marker="^", linestyle="-", color="tab:orange", label="EMOS local (contiguous, covered stations)")
-        ax.plot(
-            low_local_contig["k"], low_local_contig[metric], marker="^", linestyle="none",
-            markerfacecolor="none", markeredgecolor="tab:orange", markersize=9,
-            label="EMOS local (contiguous, E3 low-N grid k=1..7)",
-        )
-
-        ax.plot(drn_contig["n_cases"], drn_contig[metric], marker="s", linestyle="-", color="tab:green", label="DRN (contiguous)")
-
-        ax.plot(vi_trainfit_contig["n_cases"], vi_trainfit_contig[metric], marker="D", linestyle="-", color="tab:purple", label="Variance-inflation, trainfit (contiguous)")
-
-        raw_val = raw_val_row[metric].iloc[0]
-        ax.axhline(raw_val, linestyle=":", color="gray", label="Raw ensemble (N-independent)")
-        tsfm3_val = tsfm3_val_row[metric].iloc[0]
-        ax.axhline(tsfm3_val, linestyle="-.", color="black", label="TimesFM-3 zero-shot (N-independent)")
-        vi_fixed_val = vi_fixed_row[metric].iloc[0]
-        ax.axhline(vi_fixed_val, linestyle=":", color="tab:purple", label="Variance-inflation, fixed lambda=1.5 (N-independent)")
-
-        ax.set_xscale("log")
-        ax.set_ylabel(ylabel)
-
-    axes[0].legend(loc="best", fontsize=7)
-    axes[-1].set_xlabel("Training data size (cases, log scale)")
-    fig.tight_layout()
-
-    os.makedirs("figures", exist_ok=True)
-    fig.savefig("figures/data_size_sweep.png", dpi=150)
-    print("Saved figure to figures/data_size_sweep.png")
+    # --- Fix-round-1 D5: the ad hoc "figures/data_size_sweep.png" quick-look figure
+    # this block used to render here (fix-round-1 finding 5's matplotlib block) has
+    # been REMOVED, not just deleted from disk. The style-guide review flagged the
+    # shipped PNG as stale (pre-dates docs/figure_style_guide.md, uses the old
+    # non-Okabe-Ito tab:* palette, duplicates what scripts/make_figures.py's F1/F3
+    # now render properly) and asked for it to be deleted -- leaving this block in
+    # place would silently regenerate and re-add that exact file on every future run
+    # of this script, undoing the deletion. scripts/make_figures.py's make_f1()/
+    # make_f3() are the only figures this project ships for this data now.
+    print(
+        "Fix-round-1 D5: legacy figures/data_size_sweep.png quick-look plot removed "
+        "from this script (style-guide-compliant equivalents are scripts/make_figures.py's "
+        "F1/F3) -- not regenerated here."
+    )
 
 
 if __name__ == "__main__":
